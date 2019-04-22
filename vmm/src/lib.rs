@@ -365,6 +365,7 @@ impl KvmContext {
         #[cfg(target_arch = "x86_64")]
         check_cap(&kvm, Cap::SetTssAddr)?;
         check_cap(&kvm, Cap::UserMemory)?;
+        check_cap(&kvm, Cap::ReadonlyMem)?;
 
         let max_memslots = kvm.get_nr_memslots();
         Ok(KvmContext { kvm, max_memslots })
@@ -382,6 +383,7 @@ impl KvmContext {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum EpollDispatch {
+    BootDone,
     Exit,
     Stdin,
     DeviceHandler(usize, DeviceEventT),
@@ -588,11 +590,14 @@ struct Vmm {
     kernel_config: Option<KernelConfig>,
     vcpus_handles: Vec<thread::JoinHandle<()>>,
     exit_evt: Option<EpollEvent<EventFd>>,
+    boot_done_evt: Option<EpollEvent<EventFd>>,
+    boot_done_barrier: Arc<Barrier>,
     vm: Vm,
 
     // Guest VM devices.
     mmio_device_manager: Option<MMIODeviceManager>,
     legacy_device_manager: LegacyDeviceManager,
+    legacy_device_manager2: LegacyDeviceManager,
     drive_handler_id_map: HashMap<String, usize>,
     net_handler_id_map: HashMap<String, usize>,
 
@@ -649,9 +654,12 @@ impl Vmm {
             kernel_config: None,
             vcpus_handles: vec![],
             exit_evt: None,
+            boot_done_evt: None,
+            boot_done_barrier: Arc::new(Barrier::new(2usize)),
             vm,
             mmio_device_manager: None,
             legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager2: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -1039,9 +1047,18 @@ impl Vmm {
         // We're going in reverse so we can `.pop()` on the vec and still maintain order.
         for cpu_id in (0..vcpu_count).rev() {
             let vcpu_thread_barrier = vcpus_thread_barrier.clone();
+            let boot_done_barrier = self.boot_done_barrier.clone();
             // If the lock is poisoned, it's OK to panic.
             let vcpu_exit_evt = self
                 .legacy_device_manager
+                .i8042
+                .lock()
+                .expect("Failed to start VCPUs due to poisoned i8042 lock")
+                .get_reset_evt_clone()
+                .map_err(|_| StartMicrovmError::EventFd)?;
+
+            let vcpu_boot_done_evt = self
+                .legacy_device_manager2
                 .i8042
                 .lock()
                 .expect("Failed to start VCPUs due to poisoned i8042 lock")
@@ -1057,7 +1074,7 @@ impl Vmm {
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt);
+                        vcpu.run(vcpu_thread_barrier, boot_done_barrier, seccomp_level, vcpu_exit_evt, vcpu_boot_done_evt);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1136,7 +1153,7 @@ impl Vmm {
 
     fn register_events(&mut self) -> std::result::Result<(), StartMicrovmError> {
         // If the lock is poisoned, it's OK to panic.
-        let event_fd = self
+        let mut event_fd = self
             .legacy_device_manager
             .i8042
             .lock()
@@ -1148,6 +1165,19 @@ impl Vmm {
             .add_event(event_fd, EpollDispatch::Exit)
             .map_err(|_| StartMicrovmError::RegisterEvent)?;
         self.exit_evt = Some(exit_epoll_evt);
+
+        event_fd = self
+            .legacy_device_manager2
+            .i8042
+            .lock()
+            .expect("Failed to register events on the event fd due to poisoned lock")
+            .get_reset_evt_clone()
+            .map_err(|_| StartMicrovmError::EventFd)?;
+        let boot_done_epoll_evt = self
+            .epoll_context
+            .add_event(event_fd, EpollDispatch::BootDone)
+            .map_err(|_| StartMicrovmError::RegisterEvent)?;
+        self.boot_done_evt = Some(boot_done_epoll_evt);
 
         self.epoll_context
             .enable_stdin_event()
@@ -1297,6 +1327,17 @@ impl Vmm {
 
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
+                        EpollDispatch::BootDone => {
+                            match self.boot_done_evt {
+                                Some(ref ev) => {
+                                    ev.fd.read().map_err(Error::EventFd)?;
+                                }
+                                None => warn!("leftover boot-done-evt in epollcontext!"),
+                            }
+                            self.vm.memory_del().map_err(Error::Vm)?;
+                            info!("Guest memory successfully made read-only");
+                            self.boot_done_barrier.wait();
+                        }
                         EpollDispatch::Exit => {
                             match self.exit_evt {
                                 Some(ref ev) => {

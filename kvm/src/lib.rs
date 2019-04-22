@@ -328,6 +328,16 @@ pub struct VmFd {
     run_size: usize,
 }
 
+// Yue: in order for Vcpu to have a copy of VmFd, this is unsafe if multiple vcpus exist
+impl Clone for VmFd {
+    fn clone(&self) -> VmFd {
+        return VmFd {
+            vm: self.vm.try_clone().unwrap(),
+            run_size: self.run_size,
+        }
+    }
+}
+
 impl VmFd {
     /// Creates/modifies a guest physical memory slot using `KVM_SET_USER_MEMORY_REGION`.
     ///
