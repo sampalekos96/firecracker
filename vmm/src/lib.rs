@@ -1334,8 +1334,11 @@ impl Vmm {
                                 }
                                 None => warn!("leftover boot-done-evt in epollcontext!"),
                             }
-                            self.vm.memory_del().map_err(Error::Vm)?;
-                            info!("Guest memory successfully made read-only");
+
+                            #[cfg(target_arch = "x86_64")]
+                            self.get_dirty_page_count();
+                            #[cfg(target_arch = "x86_64")]
+                            info!("The dirty log is cleared");
                             self.boot_done_barrier.wait();
                         }
                         EpollDispatch::Exit => {
@@ -1345,6 +1348,10 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
+
+                            #[cfg(target_arch = "x86_64")]
+                            info!("dirty page count: {}",self.get_dirty_page_count());
+
                             self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
                         EpollDispatch::Stdin => {
