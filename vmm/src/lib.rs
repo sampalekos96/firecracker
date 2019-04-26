@@ -46,7 +46,7 @@ pub mod vmm_config;
 mod vstate;
 
 use futures::sync::oneshot;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
@@ -590,8 +590,8 @@ struct Vmm {
     kernel_config: Option<KernelConfig>,
     vcpus_handles: Vec<thread::JoinHandle<()>>,
     exit_evt: Option<EpollEvent<EventFd>>,
-    boot_done_evt: Option<EpollEvent<EventFd>>,
-    boot_done_barrier: Arc<Barrier>,
+    done_evt: Option<EpollEvent<EventFd>>,
+    done_barriers: Vec<Arc<Barrier>>,
     vm: Vm,
 
     // Guest VM devices.
@@ -654,8 +654,8 @@ impl Vmm {
             kernel_config: None,
             vcpus_handles: vec![],
             exit_evt: None,
-            boot_done_evt: None,
-            boot_done_barrier: Arc::new(Barrier::new(2usize)),
+            done_evt: None,
+            done_barriers: vec![Arc::new(Barrier::new(2usize)); 3],
             vm,
             mmio_device_manager: None,
             legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
@@ -1047,7 +1047,7 @@ impl Vmm {
         // We're going in reverse so we can `.pop()` on the vec and still maintain order.
         for cpu_id in (0..vcpu_count).rev() {
             let vcpu_thread_barrier = vcpus_thread_barrier.clone();
-            let boot_done_barrier = self.boot_done_barrier.clone();
+            let done_barriers = self.done_barriers.clone();
             // If the lock is poisoned, it's OK to panic.
             let vcpu_exit_evt = self
                 .legacy_device_manager
@@ -1057,7 +1057,7 @@ impl Vmm {
                 .get_reset_evt_clone()
                 .map_err(|_| StartMicrovmError::EventFd)?;
 
-            let vcpu_boot_done_evt = self
+            let vcpu_done_evt = self
                 .legacy_device_manager2
                 .i8042
                 .lock()
@@ -1074,7 +1074,7 @@ impl Vmm {
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, boot_done_barrier, seccomp_level, vcpu_exit_evt, vcpu_boot_done_evt);
+                        vcpu.run(vcpu_thread_barrier, done_barriers, seccomp_level, vcpu_exit_evt, vcpu_done_evt);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1087,6 +1087,11 @@ impl Vmm {
             .map_err(StartMicrovmError::SeccompFilters)?;
 
         vcpus_thread_barrier.wait();
+
+        #[cfg(target_arch = "x86_64")]
+        self.get_dirty_page_count();
+        #[cfg(target_arch = "x86_64")]
+        info!("The dirty log is cleared");
 
         Ok(())
     }
@@ -1173,11 +1178,11 @@ impl Vmm {
             .expect("Failed to register events on the event fd due to poisoned lock")
             .get_reset_evt_clone()
             .map_err(|_| StartMicrovmError::EventFd)?;
-        let boot_done_epoll_evt = self
+        let done_epoll_evt = self
             .epoll_context
             .add_event(event_fd, EpollDispatch::BootDone)
             .map_err(|_| StartMicrovmError::RegisterEvent)?;
-        self.boot_done_evt = Some(boot_done_epoll_evt);
+        self.done_evt = Some(done_epoll_evt);
 
         self.epoll_context
             .enable_stdin_event()
@@ -1318,6 +1323,10 @@ impl Vmm {
 
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
 
+        let mut done_cnt = 0usize;
+        let mut boot_dirty_page_list = HashSet::new();
+        let mut init_dirty_page_list = HashSet::new();
+
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
@@ -1328,18 +1337,33 @@ impl Vmm {
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
                         EpollDispatch::BootDone => {
-                            match self.boot_done_evt {
+                            match self.done_evt {
                                 Some(ref ev) => {
                                     ev.fd.read().map_err(Error::EventFd)?;
                                 }
                                 None => warn!("leftover boot-done-evt in epollcontext!"),
                             }
 
-                            #[cfg(target_arch = "x86_64")]
-                            self.get_dirty_page_count();
-                            #[cfg(target_arch = "x86_64")]
-                            info!("The dirty log is cleared");
-                            self.boot_done_barrier.wait();
+                            if done_cnt == 0 {
+                                boot_dirty_page_list = self.get_dirty_page_list();
+                            }
+                            else if done_cnt == 1 {
+                                init_dirty_page_list = self.get_dirty_page_list();
+                                info!("boot-init overlapping dirty page count: {}",
+                                      init_dirty_page_list
+                                      .intersection(&boot_dirty_page_list)
+                                      .collect::<HashSet<_>>()
+                                      .len());
+                            }
+                            else {
+                                info!("init-python overlapping dirty page count: {}",
+                                      self.get_dirty_page_list()
+                                      .intersection(&init_dirty_page_list)
+                                      .collect::<HashSet<_>>()
+                                      .len());
+                            }
+                            self.done_barriers[done_cnt].wait();
+                            done_cnt += 1usize;
                         }
                         EpollDispatch::Exit => {
                             match self.exit_evt {
@@ -1348,9 +1372,6 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-
-                            #[cfg(target_arch = "x86_64")]
-                            info!("dirty page count: {}",self.get_dirty_page_count());
 
                             self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
@@ -1448,6 +1469,63 @@ impl Vmm {
             return dirty_pages;
         }
         0
+    }
+
+    // Get the list of indexes where bits are set in the number's binary representation
+    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> HashSet<usize> {
+        let mut mask: u64 = 1;
+        let mut res: HashSet<usize> = HashSet::new();
+        for index in 0..64 as usize {
+            if num & mask != 0 {
+                res.insert(num_pages + offset * 65 + index);
+            }
+            mask <<= 1;
+        }
+        return res
+    }
+
+    // Get the list of dirty pages since the last call to this function.
+    // Because this is used for metrics, it swallows most errors and simply doesn't count dirty
+    // pages if the KVM operation fails.
+    #[cfg(target_arch = "x86_64")]
+    fn get_dirty_page_list(&mut self) -> HashSet<usize> {
+        if let Some(ref mem) = self.guest_memory {
+            let mut num_pages: usize = 0;
+            let mut tot_cnt: usize = 0;
+            let dirty_pages = mem.map_and_fold(
+                HashSet::new(),
+                |(slot, memory_region)| {
+                    let bitmap = self
+                        .vm
+                        .get_fd()
+                        .get_dirty_log(slot as u32, memory_region.size());
+                    match bitmap {
+                        Ok(v) => {
+                            let count = v
+                                .iter()
+                                .fold(0, |init, page| init + page.count_ones() as usize);
+                            let union = v
+                                .iter()
+                                .enumerate()
+                                .map(|(offset, page)| Vmm::list_set_bits(num_pages, offset, *page))
+                                .fold(HashSet::new(),
+                                      |init, page_list| init.union(&page_list).cloned().collect());
+                            tot_cnt += count;
+                            assert_eq!(union.len(), count);
+                            num_pages += memory_region.size()/(4<<10);
+                            return union
+                        },
+                        Err(_) => HashSet::new(),
+                    }
+                },
+                |dirty_pages, region_dirty_pages| dirty_pages.union(&region_dirty_pages).cloned().collect(),
+            );
+            assert_eq!(dirty_pages.len(), tot_cnt);
+            info!("dirty page count: {}", tot_cnt);
+            return dirty_pages;
+        }
+        info!("No guest memory");
+        HashSet::new()
     }
 
     fn configure_boot_source(

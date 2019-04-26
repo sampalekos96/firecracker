@@ -76,7 +76,7 @@ pub enum Error {
     /// Unexpected KVM_RUN exit reason
     VcpuUnhandledKvmExit,
     // Boot done
-    VcpuBootComplete,
+    VcpuDone,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     /// Error getting the dirty log
     GetDirtyLog(io::Error),
@@ -133,6 +133,7 @@ impl Vm {
             //} else {
             //    0
             //};
+            // Force dirty page logging
             let flags = KVM_MEM_LOG_DIRTY_PAGES;
             let memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
@@ -155,37 +156,37 @@ impl Vm {
 
 
     // Yue
-    pub fn memory_del(&mut self) -> Result<()> {
-        match self.guest_mem {
-            Some(ref mem) => {
-                mem.with_regions(|index, guest_addr, size, host_addr| {
-                    info!("Removing guest memory starting at {:x?} with size {}", host_addr, size);
+    //pub fn memory_del(&mut self) -> Result<()> {
+    //    match self.guest_mem {
+    //        Some(ref mem) => {
+    //            mem.with_regions(|index, guest_addr, size, host_addr| {
+    //                info!("Removing guest memory starting at {:x?} with size {}", host_addr, size);
 
-                    let mut memory_region = kvm_userspace_memory_region {
-                        slot: index as u32,
-                        guest_phys_addr: guest_addr.offset() as u64,
-                        memory_size: 0u64,
-                        userspace_addr: host_addr as u64,
-                        flags: 0u32,
-                    };
-                    self.fd.set_user_memory_region(memory_region)?;
+    //                let mut memory_region = kvm_userspace_memory_region {
+    //                    slot: index as u32,
+    //                    guest_phys_addr: guest_addr.offset() as u64,
+    //                    memory_size: 0u64,
+    //                    userspace_addr: host_addr as u64,
+    //                    flags: 0u32,
+    //                };
+    //                self.fd.set_user_memory_region(memory_region)?;
 
-                    memory_region = kvm_userspace_memory_region {
-                        slot: index as u32,
-                        guest_phys_addr: guest_addr.offset() as u64,
-                        memory_size: size as u64,
-                        userspace_addr: host_addr as u64,
-                        flags: 0x2u32,
-                    };
-                    self.fd.set_user_memory_region(memory_region)
-                })?;
-            },
-            None => {
-                info!("Guest Memory is empty");
-            }
-        }
-        Ok(())
-    }
+    //                memory_region = kvm_userspace_memory_region {
+    //                    slot: index as u32,
+    //                    guest_phys_addr: guest_addr.offset() as u64,
+    //                    memory_size: size as u64,
+    //                    userspace_addr: host_addr as u64,
+    //                    flags: 0x2u32,
+    //                };
+    //                self.fd.set_user_memory_region(memory_region)
+    //            })?;
+    //        },
+    //        None => {
+    //            info!("Guest Memory is empty");
+    //        }
+    //    }
+    //    Ok(())
+    //}
 
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
@@ -239,7 +240,7 @@ pub struct Vcpu {
     mmio_bus: devices::Bus,
     create_ts: TimestampUs,
     guest_mem: GuestMemory,
-    vmfd: VmFd,
+    //vmfd: VmFd,
     mmio_cnt: usize,
     magic_port_cnt: usize,
 }
@@ -272,7 +273,7 @@ impl Vcpu {
             mmio_bus,
             create_ts,
             guest_mem: guest_mem.clone(),
-            vmfd: vm.fd.clone(),
+            //vmfd: vm.fd.clone(),
             mmio_cnt: 0usize,
             magic_port_cnt: 0usize,
         })
@@ -327,30 +328,30 @@ impl Vcpu {
         Ok(())
     }
 
-    fn set_mem_readonly(&self) -> Result<()> {
-        self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
-            info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
-            // delete
-            let mut memory_region = kvm_userspace_memory_region {
-                slot: index as u32,
-                guest_phys_addr: guest_addr.offset() as u64,
-                memory_size:0u64,
-                userspace_addr: host_addr as u64,
-                flags: 0u32,
-            };
-            self.vmfd.set_user_memory_region(memory_region)?;
-            // add back as read only
-            memory_region = kvm_userspace_memory_region {
-                slot: index as u32,
-                guest_phys_addr: guest_addr.offset() as u64,
-                memory_size: size as u64,
-                userspace_addr: host_addr as u64,
-                flags: 0x2u32,
-            };
-            self.vmfd.set_user_memory_region(memory_region)
-        })?;
-        Ok(())
-    }
+    //fn set_mem_readonly(&self) -> Result<()> {
+    //    self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
+    //        info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
+    //        // delete
+    //        let mut memory_region = kvm_userspace_memory_region {
+    //            slot: index as u32,
+    //            guest_phys_addr: guest_addr.offset() as u64,
+    //            memory_size:0u64,
+    //            userspace_addr: host_addr as u64,
+    //            flags: 0u32,
+    //        };
+    //        self.vmfd.set_user_memory_region(memory_region)?;
+    //        // add back as read only
+    //        memory_region = kvm_userspace_memory_region {
+    //            slot: index as u32,
+    //            guest_phys_addr: guest_addr.offset() as u64,
+    //            memory_size: size as u64,
+    //            userspace_addr: host_addr as u64,
+    //            flags: 0x3u32,
+    //        };
+    //        self.vmfd.set_user_memory_region(memory_region)
+    //    })?;
+    //    Ok(())
+    //}
     // Yue: page size = 0x1000 Bytes (4KiB)
     //      We will get EINVAL if the requirements below do not hold:
     //      1. guest_phys_addr & 0xfff = 0
@@ -422,13 +423,19 @@ impl Vcpu {
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
                             info!("Received BOOT COMPLETE signal");
-                            return Err(Error::VcpuBootComplete)
                             // set guest memory to read only
+                            // info!("Setting guest memory to read-only");
                             // self.set_mem_readonly()?;
+                            // info!("Set guest memory to read-only");
+                            return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
+                            info!("/sbin/init and openrc finished");
+                            return Err(Error::VcpuDone)
+                        }
+                        else {
                             info!("Python code is executed");
-                            return Err(Error::VcpuUnhandledKvmExit)
+                            return Err(Error::VcpuDone)
                         }
                     }
                     self.io_bus.write(u64::from(addr), data);
@@ -443,14 +450,19 @@ impl Vcpu {
                 VcpuExit::MmioWrite(addr, data) => {
                     // BOOT COMPLETE and addr is not in reserved memory region
                     if self.magic_port_cnt > 0 && addr < arch::get_reserved_mem_addr() as u64 {
-                        if self.mmio_cnt == 1 {
-                            return Err(Error::VcpuUnhandledKvmExit)
-                        }
-                        self.mmio_cnt += 1;
-                        eprintln!("Received KVM_EXIT_MMIO_WRITE signal at address {:x?} with {} B data",
+                        //if self.mmio_cnt == 2 {
+                        //    return Err(Error::VcpuUnhandledKvmExit)
+                        //}
+                        //self.mmio_cnt += 1;
+                        info!("Received KVM_EXIT_MMIO_WRITE signal at address {:x?} with {} B data",
                             addr, data.len());
-                        //self.set_page_writable(addr)
+                        let guest_addr = GuestAddress(addr as usize);
+                        info!("Calling write_slice_at_addr");
+                        self.guest_mem.write_slice_at_addr(data, guest_addr)
+                            .map_err(|e| Error::GuestMemory(e))?;
+                        info!("write_slice_at_addr succeeded");
                         Ok(())
+                        //self.set_page_writable(addr)
                     }
                     else {
                         self.mmio_bus.write(addr, data);
@@ -512,10 +524,10 @@ impl Vcpu {
     pub fn run(
         &mut self,
         thread_barrier: Arc<Barrier>,
-        boot_done_barrier: Arc<Barrier>,
+        done_barriers: Vec<Arc<Barrier>>,
         seccomp_level: u32,
         vcpu_exit_evt: EventFd,
-        vcpu_boot_done_evt: EventFd,
+        vcpu_done_evt: EventFd,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -533,14 +545,18 @@ impl Vcpu {
             let ret = self.run_emulation();
             if !ret.is_ok() {
                 match ret.err() {
-                    Some(Error::VcpuBootComplete) => {
-                        if self.magic_port_cnt == 1 {
-                            if let Err(e) = vcpu_boot_done_evt.write(1) {
+                    Some(Error::VcpuDone) => {
+                        if let Err(e) = vcpu_done_evt.write(1) {
+                            METRICS.vcpu.failures.inc();
+                            error!("Failed signaling vcpu boot complete event: {}", e);
+                        }
+                        done_barriers[self.magic_port_cnt-1].wait();
+                        info!("Pass done_barrier {}", self.magic_port_cnt);
+                        if self.magic_port_cnt == 3 {
+                            if let Err(e) = vcpu_exit_evt.write(1) {
                                 METRICS.vcpu.failures.inc();
-                                error!("Failed signaling vcpu boot complete event: {}", e);
+                                error!("Failed signaling vcpu exit event: {}", e);
                             }
-                            boot_done_barrier.wait();
-                            info!("Pass boot_done_barrier");
                         }
                     },
                     _ => {
@@ -554,7 +570,7 @@ impl Vcpu {
                 }
             }
         }
-        
+
     }
 }
 

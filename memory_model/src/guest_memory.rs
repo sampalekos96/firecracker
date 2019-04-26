@@ -427,7 +427,7 @@ impl GuestMemory {
     /// ```
     pub fn map_and_fold<F, G, T>(&self, init: T, mapf: F, foldf: G) -> T
     where
-        F: Fn((usize, &MemoryRegion)) -> T,
+        F: FnMut((usize, &MemoryRegion)) -> T,
         G: Fn(T, T) -> T,
     {
         self.regions.iter().enumerate().map(mapf).fold(init, foldf)
