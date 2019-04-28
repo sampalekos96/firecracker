@@ -51,6 +51,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -1326,6 +1327,9 @@ impl Vmm {
         let mut done_cnt = 0usize;
         let mut boot_dirty_page_list = HashSet::new();
         let mut init_dirty_page_list = HashSet::new();
+        let mut python_dirty_page_list = HashSet::new();
+
+        let mut dirty_log = std::fs::OpenOptions::new().append(true).open("dirty_page.log").unwrap();
 
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
@@ -1349,18 +1353,22 @@ impl Vmm {
                             }
                             else if done_cnt == 1 {
                                 init_dirty_page_list = self.get_dirty_page_list();
-                                info!("boot-init overlapping dirty page count: {}",
-                                      init_dirty_page_list
-                                      .intersection(&boot_dirty_page_list)
-                                      .collect::<HashSet<_>>()
-                                      .len());
                             }
                             else {
-                                info!("init-python overlapping dirty page count: {}",
-                                      self.get_dirty_page_list()
-                                      .intersection(&init_dirty_page_list)
-                                      .collect::<HashSet<_>>()
-                                      .len());
+                                python_dirty_page_list = self.get_dirty_page_list();
+                                write!(dirty_log, "{} {} {} {} {}\n",
+                                       boot_dirty_page_list.len(),
+                                       init_dirty_page_list.len(),
+                                       python_dirty_page_list.len(),
+                                       init_dirty_page_list
+                                       .intersection(&boot_dirty_page_list)
+                                       .collect::<HashSet<_>>()
+                                       .len(),
+                                       python_dirty_page_list
+                                       .intersection(&init_dirty_page_list)
+                                       .collect::<HashSet<_>>()
+                                       .len()).ok();
+
                             }
                             self.done_barriers[done_cnt].wait();
                             done_cnt += 1usize;

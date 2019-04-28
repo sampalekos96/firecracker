@@ -593,7 +593,7 @@ pub enum VcpuExit<'a> {
     /// Corresponds to KVM_EXIT_SHUTDOWN.
     Shutdown,
     /// Corresponds to KVM_EXIT_FAIL_ENTRY.
-    FailEntry,
+    FailEntry(u64 /* reason */),
     /// Corresponds to KVM_EXIT_INTR.
     Intr,
     /// Corresponds to KVM_EXIT_SET_TPR.
@@ -609,7 +609,7 @@ pub enum VcpuExit<'a> {
     /// Corresponds to KVM_EXIT_NMI.
     Nmi,
     /// Corresponds to KVM_EXIT_INTERNAL_ERROR.
-    InternalError,
+    InternalError(u32 /* suberror */, &'a [u64] /* data */),
     /// Corresponds to KVM_EXIT_OSI.
     Osi,
     /// Corresponds to KVM_EXIT_PAPR_HCALL.
@@ -894,7 +894,11 @@ impl VcpuFd {
                 }
                 KVM_EXIT_IRQ_WINDOW_OPEN => Ok(VcpuExit::IrqWindowOpen),
                 KVM_EXIT_SHUTDOWN => Ok(VcpuExit::Shutdown),
-                KVM_EXIT_FAIL_ENTRY => Ok(VcpuExit::FailEntry),
+                KVM_EXIT_FAIL_ENTRY => {
+                    let reason = unsafe {
+                        run.__bindgen_anon_1.fail_entry.hardware_entry_failure_reason };
+                    Ok(VcpuExit::FailEntry(reason))
+                },
                 KVM_EXIT_INTR => Ok(VcpuExit::Intr),
                 KVM_EXIT_SET_TPR => Ok(VcpuExit::SetTpr),
                 KVM_EXIT_TPR_ACCESS => Ok(VcpuExit::TprAccess),
@@ -902,7 +906,13 @@ impl VcpuFd {
                 KVM_EXIT_S390_RESET => Ok(VcpuExit::S390Reset),
                 KVM_EXIT_DCR => Ok(VcpuExit::Dcr),
                 KVM_EXIT_NMI => Ok(VcpuExit::Nmi),
-                KVM_EXIT_INTERNAL_ERROR => Ok(VcpuExit::InternalError),
+                KVM_EXIT_INTERNAL_ERROR => {
+                    let internal = unsafe { &run.__bindgen_anon_1.internal };
+                    let ndata = internal.ndata as usize;
+                    let suberror = internal.suberror;
+                    let data = &internal.data[..ndata];
+                    Ok(VcpuExit::InternalError(suberror, data))
+                },
                 KVM_EXIT_OSI => Ok(VcpuExit::Osi),
                 KVM_EXIT_PAPR_HCALL => Ok(VcpuExit::PaprHcall),
                 KVM_EXIT_S390_UCONTROL => Ok(VcpuExit::S390Ucontrol),

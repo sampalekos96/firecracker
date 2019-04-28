@@ -240,8 +240,8 @@ pub struct Vcpu {
     mmio_bus: devices::Bus,
     create_ts: TimestampUs,
     guest_mem: GuestMemory,
-    //vmfd: VmFd,
-    mmio_cnt: usize,
+    _vmfd: VmFd,
+    _mmio_cnt: usize,
     magic_port_cnt: usize,
 }
 
@@ -273,8 +273,8 @@ impl Vcpu {
             mmio_bus,
             create_ts,
             guest_mem: guest_mem.clone(),
-            //vmfd: vm.fd.clone(),
-            mmio_cnt: 0usize,
+            _vmfd: vm.fd.clone(),
+            _mmio_cnt: 0usize,
             magic_port_cnt: 0usize,
         })
     }
@@ -328,30 +328,30 @@ impl Vcpu {
         Ok(())
     }
 
-    //fn set_mem_readonly(&self) -> Result<()> {
-    //    self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
-    //        info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
-    //        // delete
-    //        let mut memory_region = kvm_userspace_memory_region {
-    //            slot: index as u32,
-    //            guest_phys_addr: guest_addr.offset() as u64,
-    //            memory_size:0u64,
-    //            userspace_addr: host_addr as u64,
-    //            flags: 0u32,
-    //        };
-    //        self.vmfd.set_user_memory_region(memory_region)?;
-    //        // add back as read only
-    //        memory_region = kvm_userspace_memory_region {
-    //            slot: index as u32,
-    //            guest_phys_addr: guest_addr.offset() as u64,
-    //            memory_size: size as u64,
-    //            userspace_addr: host_addr as u64,
-    //            flags: 0x3u32,
-    //        };
-    //        self.vmfd.set_user_memory_region(memory_region)
-    //    })?;
-    //    Ok(())
-    //}
+    fn _set_mem_readonly(&self) -> Result<()> {
+        self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
+            info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
+            // delete
+            let mut memory_region = kvm_userspace_memory_region {
+                slot: index as u32,
+                guest_phys_addr: guest_addr.offset() as u64,
+                memory_size:0u64,
+                userspace_addr: host_addr as u64,
+                flags: 0u32,
+            };
+            self._vmfd.set_user_memory_region(memory_region)?;
+            // add back as read only
+            memory_region = kvm_userspace_memory_region {
+                slot: index as u32,
+                guest_phys_addr: guest_addr.offset() as u64,
+                memory_size: size as u64,
+                userspace_addr: host_addr as u64,
+                flags: 0x3u32,
+            };
+            self._vmfd.set_user_memory_region(memory_region)
+        })?;
+        Ok(())
+    }
     // Yue: page size = 0x1000 Bytes (4KiB)
     //      We will get EINVAL if the requirements below do not hold:
     //      1. guest_phys_addr & 0xfff = 0
@@ -424,9 +424,9 @@ impl Vcpu {
                             super::Vmm::log_boot_time(&self.create_ts);
                             info!("Received BOOT COMPLETE signal");
                             // set guest memory to read only
-                            // info!("Setting guest memory to read-only");
-                            // self.set_mem_readonly()?;
-                            // info!("Set guest memory to read-only");
+                            //info!("Setting guest memory to read-only");
+                            //self._set_mem_readonly()?;
+                            //info!("Set guest memory to read-only");
                             return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
@@ -450,11 +450,11 @@ impl Vcpu {
                 VcpuExit::MmioWrite(addr, data) => {
                     // BOOT COMPLETE and addr is not in reserved memory region
                     if self.magic_port_cnt > 0 && addr < arch::get_reserved_mem_addr() as u64 {
-                        //if self.mmio_cnt == 2 {
+                        //if self._mmio_cnt == 2 {
                         //    return Err(Error::VcpuUnhandledKvmExit)
                         //}
-                        //self.mmio_cnt += 1;
-                        info!("Received KVM_EXIT_MMIO_WRITE signal at address {:x?} with {} B data",
+                        //self._mmio_cnt += 1;
+                        info!("Received KVM_EXIT_MMIO_WRITE signal at address 0x{:x?} with {} B data",
                             addr, data.len());
                         let guest_addr = GuestAddress(addr as usize);
                         info!("Calling write_slice_at_addr");
@@ -480,14 +480,14 @@ impl Vcpu {
                 }
                 // Documentation specifies that below kvm exits are considered
                 // errors.
-                VcpuExit::FailEntry => {
+                VcpuExit::FailEntry(reason) => {
                     METRICS.vcpu.failures.inc();
-                    error!("Received KVM_EXIT_FAIL_ENTRY signal");
+                    error!("Received KVM_EXIT_FAIL_ENTRY signal with reason: 0x{:x}", reason);
                     Err(Error::VcpuUnhandledKvmExit)
                 }
-                VcpuExit::InternalError => {
+                VcpuExit::InternalError(suberror, _data) => {
                     METRICS.vcpu.failures.inc();
-                    error!("Received KVM_EXIT_INTERNAL_ERROR signal");
+                    error!("Received KVM_EXIT_INTERNAL_ERROR signal with suberror: 0x{:x}", suberror);
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 r => {
