@@ -91,6 +91,7 @@ impl GuestMemory {
         })
     }
 
+    //pub fn set_mempage_inaccessible(userspace_addr
     /// Returns the end address of memory.
     ///
     /// # Examples

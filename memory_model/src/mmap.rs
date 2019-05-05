@@ -74,6 +74,15 @@ impl MemoryMapping {
         })
     }
 
+    /// call libc::mprotect to make given memory page(s) as not accessible
+    pub fn mprotect_none(userspace_addr: *mut u8, len: usize) -> Result<()> {
+        let ret = unsafe libc::mprotect(userspace_addr, len, libc::PROT_NONE);
+        if ret == -1 {
+            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
     /// Returns a pointer to the beginning of the memory region.  Should only be
     /// used for passing this region to ioctls for setting guest memory.
     pub fn as_ptr(&self) -> *mut u8 {

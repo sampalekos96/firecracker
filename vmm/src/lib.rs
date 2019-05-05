@@ -367,6 +367,7 @@ impl KvmContext {
         check_cap(&kvm, Cap::SetTssAddr)?;
         check_cap(&kvm, Cap::UserMemory)?;
         check_cap(&kvm, Cap::ReadonlyMem)?;
+        check_cap(&kvm, Cap::SyncMmu)?;
 
         let max_memslots = kvm.get_nr_memslots();
         Ok(KvmContext { kvm, max_memslots })
@@ -1356,7 +1357,7 @@ impl Vmm {
                             }
                             else {
                                 python_dirty_page_list = self.get_dirty_page_list();
-                                write!(dirty_log, "{} {} {} {} {}\n",
+                                write!(dirty_log, "{} {} {} {} {} {} {}\n",
                                        boot_dirty_page_list.len(),
                                        init_dirty_page_list.len(),
                                        python_dirty_page_list.len(),
@@ -1367,7 +1368,21 @@ impl Vmm {
                                        python_dirty_page_list
                                        .intersection(&init_dirty_page_list)
                                        .collect::<HashSet<_>>()
-                                       .len()).ok();
+                                       .len(),
+                                       python_dirty_page_list
+                                       .intersection(&boot_dirty_page_list)
+                                       .collect::<HashSet<_>>()
+                                       .difference(&init_dirty_page_list
+                                                   .intersection(&boot_dirty_page_list)
+                                                   .collect::<HashSet<_>>())
+                                       .collect::<HashSet<_>>().len(),
+                                       python_dirty_page_list
+                                       .intersection(&boot_dirty_page_list
+                                                     .intersection(&init_dirty_page_list)
+                                                     .cloned()
+                                                     .collect::<HashSet<_>>())
+                                       .collect::<HashSet<_>>().len()
+                                       ).ok();
 
                             }
                             self.done_barriers[done_cnt].wait();
