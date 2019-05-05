@@ -46,7 +46,7 @@ pub mod vmm_config;
 mod vstate;
 
 use futures::sync::oneshot;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeSet};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
@@ -1317,6 +1317,26 @@ impl Vmm {
         }
     }
 
+    fn print_contiguous_regions(region_log: &mut std::fs::File, dirty_page_set: &BTreeSet<usize>) {
+        let mut set_iter = dirty_page_set.iter();
+        let mut prev: usize = *set_iter.next().unwrap();
+        let mut region_start: usize = prev;
+        loop {
+            if let Some(&cur) = set_iter.next() {
+                if cur - prev != 1 {
+                    // write a new contiguous region [region_start, prev]
+                    write!(region_log, "{} {}\n", region_start, prev - region_start + 1).ok();
+                    // reset region start index
+                    region_start = cur;
+                }
+                prev = cur;
+            }
+            else {
+                break;
+            }
+        }
+    }
+
     #[allow(clippy::unused_label)]
     fn run_control(&mut self) -> Result<()> {
         const EPOLL_EVENTS_LEN: usize = 100;
@@ -1326,11 +1346,15 @@ impl Vmm {
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
 
         let mut done_cnt = 0usize;
-        let mut boot_dirty_page_list = HashSet::new();
-        let mut init_dirty_page_list = HashSet::new();
-        let mut python_dirty_page_list = HashSet::new();
 
-        let mut dirty_log = std::fs::OpenOptions::new().append(true).open("dirty_page.log").unwrap();
+        let mut dirty_log = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("dirty_page.log").unwrap();
+        let mut region_log = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("regions.log").unwrap();
 
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
@@ -1349,39 +1373,46 @@ impl Vmm {
                                 None => warn!("leftover boot-done-evt in epollcontext!"),
                             }
 
+                            let mut boot_dirty_page_list = BTreeSet::new();
+                            let mut init_dirty_page_list = BTreeSet::new();
+                            let mut python_dirty_page_list = BTreeSet::new();
+
                             if done_cnt == 0 {
                                 boot_dirty_page_list = self.get_dirty_page_list();
+                                Vmm::print_contiguous_regions(&mut region_log, &boot_dirty_page_list);
                             }
                             else if done_cnt == 1 {
                                 init_dirty_page_list = self.get_dirty_page_list();
+                                Vmm::print_contiguous_regions(&mut region_log, &init_dirty_page_list);
                             }
                             else {
                                 python_dirty_page_list = self.get_dirty_page_list();
+                                Vmm::print_contiguous_regions(&mut region_log, &python_dirty_page_list);
                                 write!(dirty_log, "{} {} {} {} {} {} {}\n",
                                        boot_dirty_page_list.len(),
                                        init_dirty_page_list.len(),
                                        python_dirty_page_list.len(),
                                        init_dirty_page_list
                                        .intersection(&boot_dirty_page_list)
-                                       .collect::<HashSet<_>>()
+                                       .collect::<BTreeSet<_>>()
                                        .len(),
                                        python_dirty_page_list
                                        .intersection(&init_dirty_page_list)
-                                       .collect::<HashSet<_>>()
+                                       .collect::<BTreeSet<_>>()
                                        .len(),
                                        python_dirty_page_list
                                        .intersection(&boot_dirty_page_list)
-                                       .collect::<HashSet<_>>()
+                                       .collect::<BTreeSet<_>>()
                                        .difference(&init_dirty_page_list
                                                    .intersection(&boot_dirty_page_list)
-                                                   .collect::<HashSet<_>>())
-                                       .collect::<HashSet<_>>().len(),
+                                                   .collect::<BTreeSet<_>>())
+                                       .collect::<BTreeSet<_>>().len(),
                                        python_dirty_page_list
                                        .intersection(&boot_dirty_page_list
                                                      .intersection(&init_dirty_page_list)
                                                      .cloned()
-                                                     .collect::<HashSet<_>>())
-                                       .collect::<HashSet<_>>().len()
+                                                     .collect::<BTreeSet<_>>())
+                                       .collect::<BTreeSet<_>>().len()
                                        ).ok();
 
                             }
@@ -1495,9 +1526,9 @@ impl Vmm {
     }
 
     // Get the list of indexes where bits are set in the number's binary representation
-    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> HashSet<usize> {
+    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
         let mut mask: u64 = 1;
-        let mut res: HashSet<usize> = HashSet::new();
+        let mut res: BTreeSet<usize> = BTreeSet::new();
         for index in 0..64 as usize {
             if num & mask != 0 {
                 res.insert(num_pages + offset * 65 + index);
@@ -1511,12 +1542,12 @@ impl Vmm {
     // Because this is used for metrics, it swallows most errors and simply doesn't count dirty
     // pages if the KVM operation fails.
     #[cfg(target_arch = "x86_64")]
-    fn get_dirty_page_list(&mut self) -> HashSet<usize> {
+    fn get_dirty_page_list(&mut self) -> BTreeSet<usize> {
         if let Some(ref mem) = self.guest_memory {
             let mut num_pages: usize = 0;
             let mut tot_cnt: usize = 0;
             let dirty_pages = mem.map_and_fold(
-                HashSet::new(),
+                BTreeSet::new(),
                 |(slot, memory_region)| {
                     let bitmap = self
                         .vm
@@ -1531,14 +1562,14 @@ impl Vmm {
                                 .iter()
                                 .enumerate()
                                 .map(|(offset, page)| Vmm::list_set_bits(num_pages, offset, *page))
-                                .fold(HashSet::new(),
+                                .fold(BTreeSet::new(),
                                       |init, page_list| init.union(&page_list).cloned().collect());
                             tot_cnt += count;
                             assert_eq!(union.len(), count);
                             num_pages += memory_region.size()/(4<<10);
                             return union
                         },
-                        Err(_) => HashSet::new(),
+                        Err(_) => BTreeSet::new(),
                     }
                 },
                 |dirty_pages, region_dirty_pages| dirty_pages.union(&region_dirty_pages).cloned().collect(),
@@ -1548,7 +1579,7 @@ impl Vmm {
             return dirty_pages;
         }
         info!("No guest memory");
-        HashSet::new()
+        BTreeSet::new()
     }
 
     fn configure_boot_source(
