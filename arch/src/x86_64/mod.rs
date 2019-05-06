@@ -57,16 +57,20 @@ const MEM_32BIT_GAP_SIZE: usize = (768 << 20);
 pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
     let memory_gap_start = GuestAddress(FIRST_ADDR_PAST_32BITS - MEM_32BIT_GAP_SIZE);
     let memory_gap_end = GuestAddress(FIRST_ADDR_PAST_32BITS);
+    let himem_start = GuestAddress(super::HIMEM_START);
     let requested_memory_size = GuestAddress(size);
     let mut regions = Vec::new();
 
     // case1: guest memory fits before the gap
     if requested_memory_size <= memory_gap_start {
-        regions.push((GuestAddress(0), size));
+        // put memory before HIMEM_START in a separate memory region
+        regions.push((GuestAddress(0), himem_start.offset()));
+        regions.push((himem_start, requested_memory_size.offset_from(himem_start))); 
     // case2: guest memory extends beyond the gap
     } else {
         // push memory before the gap
-        regions.push((GuestAddress(0), memory_gap_start.offset()));
+        regions.push((GuestAddress(0), himem_start.offset()));
+        regions.push((himem_start, memory_gap_start.offset_from(himem_start))); 
         regions.push((
             memory_gap_end,
             requested_memory_size.offset_from(memory_gap_start),

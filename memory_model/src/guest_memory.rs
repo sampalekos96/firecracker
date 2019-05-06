@@ -91,7 +91,6 @@ impl GuestMemory {
         })
     }
 
-    //pub fn set_mempage_inaccessible(userspace_addr
     /// Returns the end address of memory.
     ///
     /// # Examples
@@ -151,6 +150,24 @@ impl GuestMemory {
                 region.mapping.size(),
                 region.mapping.as_ptr() as usize,
             )?;
+        }
+        Ok(())
+    }
+
+    /// perform specified action on himem regions
+    pub fn with_himem_regions<F, E>(&self, cb: F) -> result::Result<(), E>
+    where
+        F: Fn(usize, GuestAddress, usize, usize) -> result::Result<(), E>,
+    {
+        for (index, region) in self.regions.iter().enumerate() {
+            if index > 0 {
+                cb(
+                    index,
+                    region.guest_base,
+                    region.mapping.size(),
+                    region.mapping.as_ptr() as usize,
+                )?;
+            }
         }
         Ok(())
     }

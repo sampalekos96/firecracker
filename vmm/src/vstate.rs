@@ -328,8 +328,8 @@ impl Vcpu {
         Ok(())
     }
 
-    fn _set_mem_readonly(&self) -> Result<()> {
-        self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
+    fn _set_himem_readonly(&self) -> Result<()> {
+        self.guest_mem.with_himem_regions(|index, guest_addr, size, host_addr| {
             info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
             // delete
             let mut memory_region = kvm_userspace_memory_region {
@@ -346,7 +346,7 @@ impl Vcpu {
                 guest_phys_addr: guest_addr.offset() as u64,
                 memory_size: size as u64,
                 userspace_addr: host_addr as u64,
-                flags: 0x3u32,
+                flags: 0x2u32,
             };
             self._vmfd.set_user_memory_region(memory_region)
         })?;
@@ -425,8 +425,8 @@ impl Vcpu {
                             info!("Received BOOT COMPLETE signal");
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
-                            //self._set_mem_readonly()?;
-                            //info!("Set guest memory to read-only");
+                            self._set_himem_readonly()?;
+                            info!("Set guest memory to read-only");
                             return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
@@ -450,10 +450,6 @@ impl Vcpu {
                 VcpuExit::MmioWrite(addr, data) => {
                     // BOOT COMPLETE and addr is not in reserved memory region
                     if self.magic_port_cnt > 0 && addr < arch::get_reserved_mem_addr() as u64 {
-                        //if self._mmio_cnt == 2 {
-                        //    return Err(Error::VcpuUnhandledKvmExit)
-                        //}
-                        //self._mmio_cnt += 1;
                         info!("Received KVM_EXIT_MMIO_WRITE signal at address 0x{:x?} with {} B data",
                             addr, data.len());
                         let guest_addr = GuestAddress(addr as usize);

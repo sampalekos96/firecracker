@@ -1379,14 +1379,17 @@ impl Vmm {
 
                             if done_cnt == 0 {
                                 boot_dirty_page_list = self.get_dirty_page_list();
+                                write!(region_log, "boot\n").ok();
                                 Vmm::print_contiguous_regions(&mut region_log, &boot_dirty_page_list);
                             }
                             else if done_cnt == 1 {
                                 init_dirty_page_list = self.get_dirty_page_list();
+                                write!(region_log, "init\n").ok();
                                 Vmm::print_contiguous_regions(&mut region_log, &init_dirty_page_list);
                             }
                             else {
                                 python_dirty_page_list = self.get_dirty_page_list();
+                                write!(region_log, "python\n").ok();
                                 Vmm::print_contiguous_regions(&mut region_log, &python_dirty_page_list);
                                 write!(dirty_log, "{} {} {} {} {} {} {}\n",
                                        boot_dirty_page_list.len(),
