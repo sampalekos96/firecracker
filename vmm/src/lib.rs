@@ -1542,13 +1542,12 @@ impl Vmm {
     }
 
     // Get the list of dirty pages since the last call to this function.
-    // Because this is used for metrics, it swallows most errors and simply doesn't count dirty
-    // pages if the KVM operation fails.
+    // Because this is used for metrics, it swallows most errors and simply returns empty set
+    // if the KVM operation fails.
     #[cfg(target_arch = "x86_64")]
     fn get_dirty_page_list(&mut self) -> BTreeSet<usize> {
         if let Some(ref mem) = self.guest_memory {
             let mut num_pages: usize = 0;
-            let mut tot_cnt: usize = 0;
             let dirty_pages = mem.map_and_fold(
                 BTreeSet::new(),
                 |(slot, memory_region)| {
@@ -1558,30 +1557,23 @@ impl Vmm {
                         .get_dirty_log(slot as u32, memory_region.size());
                     match bitmap {
                         Ok(v) => {
-                            let count = v
-                                .iter()
-                                .fold(0, |init, page| init + page.count_ones() as usize);
                             let union = v
                                 .iter()
                                 .enumerate()
                                 .map(|(offset, page)| Vmm::list_set_bits(num_pages, offset, *page))
                                 .fold(BTreeSet::new(),
                                       |init, page_list| init.union(&page_list).cloned().collect());
-                            tot_cnt += count;
-                            assert_eq!(union.len(), count);
                             num_pages += memory_region.size()/(4<<10);
                             return union
                         },
                         Err(_) => BTreeSet::new(),
                     }
                 },
-                |dirty_pages, region_dirty_pages| dirty_pages.union(&region_dirty_pages).cloned().collect(),
+                |dirty_pages, region_dirty_pages|
+                    dirty_pages.union(&region_dirty_pages).cloned().collect(),
             );
-            assert_eq!(dirty_pages.len(), tot_cnt);
-            info!("dirty page count: {}", tot_cnt);
-            return dirty_pages;
+            return dirty_pages
         }
-        info!("No guest memory");
         BTreeSet::new()
     }
 
