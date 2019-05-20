@@ -83,6 +83,45 @@ extern "C" fn sigsys_handler(
     };
 }
 
+/// Sets up the specified signal handler for `SIGSEGV`.
+pub fn setup_sigsegv_handler() -> Result<(), io::Error> {
+    // Safe, because this is a POD struct.
+    let mut sigact: sigaction = unsafe { mem::zeroed() };
+    sigact.sa_flags = libc::SA_SIGINFO;
+    sigact.sa_sigaction = sigsegv_handler as usize;
+
+    // We set all the bits of sa_mask, so all signals are blocked on the current thread while the
+    // SIGSYS handler is executing. Safe because the parameter is valid and we check the return
+    // value.
+    if unsafe { sigfillset(&mut sigact.sa_mask as *mut sigset_t) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Safe because the parameters are valid and we check the return value.
+    if unsafe { sigaction(libc::SIGSYS, &sigact, null_mut()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+extern "C" fn sigsegv_handler(
+    num: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _unused: *mut libc::c_void,
+) {
+    // Safe because we're just reading some fields from a supposedly valid argument.
+    let si_signo = unsafe { (*info).si_signo };
+    let si_code = unsafe { (*info).si_code };
+
+    // Sanity check. The condition should never be true.
+    if num != si_signo || num != libc::SIGSEGV || si_code != SYS_SECCOMP_CODE as i32 {
+        // Safe because we're terminating the process anyway.
+        unsafe { libc::_exit(i32::from(super::FC_EXIT_CODE_UNEXPECTED_ERROR)) };
+    }
+    info!("sigsegv_handler is called");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

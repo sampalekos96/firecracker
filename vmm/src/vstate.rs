@@ -18,7 +18,7 @@ use kvm::*;
 use kvm_bindings::{kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
-use sys_util::EventFd;
+use sys_util::{EventFd};
 #[cfg(target_arch = "x86_64")]
 use vmm_config::machine_config::CpuFeaturesTemplate;
 use vmm_config::machine_config::VmConfig;
@@ -425,8 +425,8 @@ impl Vcpu {
                             info!("Received BOOT COMPLETE signal");
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
-                            self._set_himem_readonly()?;
-                            info!("Set guest memory to read-only");
+                            //self._set_himem_readonly()?;
+                            //info!("Set guest memory to read-only");
                             return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
@@ -500,6 +500,10 @@ impl Vcpu {
                 match e.raw_os_error().unwrap() {
                     // Why do we check for these if we only return EINVAL?
                     libc::EAGAIN | libc::EINTR => Ok(()),
+                    libc::EFAULT => {
+                        info!("Bad Address");
+                        Ok(())
+                    },
                     _ => {
                         METRICS.vcpu.failures.inc();
                         error!("Failure during vcpu run: {}", e);

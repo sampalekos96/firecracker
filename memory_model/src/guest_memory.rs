@@ -32,6 +32,8 @@ pub enum Error {
     MemoryRegionOverlap,
     /// No memory regions were provided for initializing the guest memory.
     NoMemoryRegions,
+    /// mprotect_none failed
+    MprotectNoneFailed(std::io::Error),
 }
 type Result<T> = result::Result<T, Error>;
 
@@ -51,6 +53,15 @@ impl MemoryRegion {
 fn region_end(region: &MemoryRegion) -> GuestAddress {
     // unchecked_add is safe as the region bounds were checked when it was created.
     region.guest_base.unchecked_add(region.mapping.size())
+}
+
+/// call libc::mprotect to make given memory page(s) as not accessible
+pub fn mprotect_none(userspace_addr: *mut u8, len: usize) -> Result<()> {
+    let ret = unsafe { libc::mprotect(userspace_addr as *mut libc::c_void, len, libc::PROT_NONE) };
+    if ret == -1 {
+        return Err(Error::MprotectNoneFailed(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 /// Tracks all memory regions allocated for the guest in the current process.
@@ -168,6 +179,14 @@ impl GuestMemory {
                     region.mapping.as_ptr() as usize,
                 )?;
             }
+        }
+        Ok(())
+    }
+
+    /// perform specified action on himem regions
+    pub fn mark_regions_nrnw(&self) -> Result<()> {
+        for (index, region) in self.regions.iter().enumerate() {
+            mprotect_none(region.mapping.as_ptr(), region.mapping.size())?;
         }
         Ok(())
     }

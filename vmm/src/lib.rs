@@ -76,7 +76,7 @@ use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
-pub use sigsys_handler::setup_sigsys_handler;
+pub use sigsys_handler::{setup_sigsys_handler, setup_sigsegv_handler};
 use sys_util::{EventFd, Terminal};
 use vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
 use vmm_config::drive::{BlockDeviceConfig, BlockDeviceConfigs, DriveError};
@@ -385,12 +385,13 @@ impl KvmContext {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum EpollDispatch {
-    BootDone,
+    Done,
     Exit,
     Stdin,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
+    CollectDirtyLog,
 }
 
 struct MaybeHandler {
@@ -618,6 +619,8 @@ struct Vmm {
     from_api: Receiver<Box<VmmAction>>,
 
     write_metrics_event: EpollEvent<TimerFd>,
+    collect_dirty_log_event: EpollEvent<TimerFd>,
+    dirty_page_lists: Vec<BTreeSet<usize>>,
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
@@ -641,6 +644,13 @@ impl Vmm {
                 // non-blocking & close on exec
                 TimerFd::new_custom(ClockId::Monotonic, true, true).map_err(Error::TimerFd)?,
                 EpollDispatch::WriteMetrics,
+            )
+            .expect("Cannot add write metrics TimerFd to epoll.");
+        let collect_dirty_log_event = epoll_context
+            .add_event(
+                // non-blocking & close on exec
+                TimerFd::new_custom(ClockId::Monotonic, true, true).map_err(Error::TimerFd)?,
+                EpollDispatch::CollectDirtyLog,
             )
             .expect("Cannot add write metrics TimerFd to epoll.");
 
@@ -672,6 +682,8 @@ impl Vmm {
             api_event,
             from_api,
             write_metrics_event,
+            collect_dirty_log_event,
+            dirty_page_lists: Vec::new(),
             seccomp_level,
         })
     }
@@ -1030,7 +1042,26 @@ impl Vmm {
         Ok(vcpus)
     }
 
+    extern "C" fn _handle_sigsegv(sig: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
+       info!("handle_sigsegv is called");
+       assert_eq!(sig, 0);
+       //mprotect_r();
+       //mprotect_w();
+    }
+
     fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> std::result::Result<(), StartMicrovmError> {
+        self.guest_memory.clone().unwrap().mark_regions_nrnw()
+            .map_err(|e| StartMicrovmError::GuestMemory(e))?;
+        //unsafe {
+        //    register_signal_handler(libc::SIGSEGV,
+        //                            SignalHandler::Siginfo(Vmm::handle_sigsegv),
+        //                            true)
+        //        .map_err(|e| {
+        //            info!("register_signal_handler failed with error {}", e);
+        //            StartMicrovmError::VcpuSpawn(e)
+        //        })?;
+        //}
+
         // vm_config has a default value for vcpu_count.
         let vcpu_count = self
             .vm_config
@@ -1070,6 +1101,11 @@ impl Vmm {
             // `unwrap` is safe since we are asserting that the `vcpu_count` is equal to the number
             // of items of `vcpus` vector.
             let mut vcpu = vcpus.pop().unwrap();
+            let timer_state = TimerState::Periodic {
+                current: Duration::from_millis(5u64),
+                interval: Duration::from_millis(5u64),
+            };
+            self.collect_dirty_log_event.fd.set_state(timer_state, SetTimeFlags::Default);
 
             let seccomp_level = self.seccomp_level;
             self.vcpus_handles.push(
@@ -1182,7 +1218,7 @@ impl Vmm {
             .map_err(|_| StartMicrovmError::EventFd)?;
         let done_epoll_evt = self
             .epoll_context
-            .add_event(event_fd, EpollDispatch::BootDone)
+            .add_event(event_fd, EpollDispatch::Done)
             .map_err(|_| StartMicrovmError::RegisterEvent)?;
         self.done_evt = Some(done_epoll_evt);
 
@@ -1317,24 +1353,12 @@ impl Vmm {
         }
     }
 
-    fn print_contiguous_regions(region_log: &mut std::fs::File, dirty_page_set: &BTreeSet<usize>) {
-        let mut set_iter = dirty_page_set.iter();
-        let mut prev: usize = *set_iter.next().unwrap();
-        let mut region_start: usize = prev;
-        loop {
-            if let Some(&cur) = set_iter.next() {
-                if cur - prev != 1 {
-                    // write a new contiguous region [region_start, prev]
-                    write!(region_log, "{} {}\n", region_start, prev - region_start + 1).ok();
-                    // reset region start index
-                    region_start = cur;
-                }
-                prev = cur;
-            }
-            else {
-                break;
-            }
-        }
+    fn dump_dirty_page_lists_as_json(&self) {
+        let json_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open("dirty_page.json").unwrap();
+        serde_json::to_writer(json_file, &self.dirty_page_lists);
     }
 
     #[allow(clippy::unused_label)]
@@ -1347,15 +1371,6 @@ impl Vmm {
 
         let mut done_cnt = 0usize;
 
-        let mut dirty_log = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("dirty_page.log").unwrap();
-        let mut region_log = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("regions.log").unwrap();
-
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
@@ -1365,7 +1380,7 @@ impl Vmm {
 
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
-                        EpollDispatch::BootDone => {
+                        EpollDispatch::Done => {
                             match self.done_evt {
                                 Some(ref ev) => {
                                     ev.fd.read().map_err(Error::EventFd)?;
@@ -1373,52 +1388,6 @@ impl Vmm {
                                 None => warn!("leftover boot-done-evt in epollcontext!"),
                             }
 
-                            let mut boot_dirty_page_list = BTreeSet::new();
-                            let mut init_dirty_page_list = BTreeSet::new();
-                            let mut python_dirty_page_list = BTreeSet::new();
-
-                            if done_cnt == 0 {
-                                boot_dirty_page_list = self.get_dirty_page_list();
-                                write!(region_log, "boot\n").ok();
-                                Vmm::print_contiguous_regions(&mut region_log, &boot_dirty_page_list);
-                            }
-                            else if done_cnt == 1 {
-                                init_dirty_page_list = self.get_dirty_page_list();
-                                write!(region_log, "init\n").ok();
-                                Vmm::print_contiguous_regions(&mut region_log, &init_dirty_page_list);
-                            }
-                            else {
-                                python_dirty_page_list = self.get_dirty_page_list();
-                                write!(region_log, "python\n").ok();
-                                Vmm::print_contiguous_regions(&mut region_log, &python_dirty_page_list);
-                                write!(dirty_log, "{} {} {} {} {} {} {}\n",
-                                       boot_dirty_page_list.len(),
-                                       init_dirty_page_list.len(),
-                                       python_dirty_page_list.len(),
-                                       init_dirty_page_list
-                                       .intersection(&boot_dirty_page_list)
-                                       .collect::<BTreeSet<_>>()
-                                       .len(),
-                                       python_dirty_page_list
-                                       .intersection(&init_dirty_page_list)
-                                       .collect::<BTreeSet<_>>()
-                                       .len(),
-                                       python_dirty_page_list
-                                       .intersection(&boot_dirty_page_list)
-                                       .collect::<BTreeSet<_>>()
-                                       .difference(&init_dirty_page_list
-                                                   .intersection(&boot_dirty_page_list)
-                                                   .collect::<BTreeSet<_>>())
-                                       .collect::<BTreeSet<_>>().len(),
-                                       python_dirty_page_list
-                                       .intersection(&boot_dirty_page_list
-                                                     .intersection(&init_dirty_page_list)
-                                                     .cloned()
-                                                     .collect::<BTreeSet<_>>())
-                                       .collect::<BTreeSet<_>>().len()
-                                       ).ok();
-
-                            }
                             self.done_barriers[done_cnt].wait();
                             done_cnt += 1usize;
                         }
@@ -1429,7 +1398,8 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-
+                            self.collect_dirty_log_event.fd.set_state(TimerState::Disarmed, SetTimeFlags::Default);
+                            self.dump_dirty_page_lists_as_json();
                             self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
                         EpollDispatch::Stdin => {
@@ -1494,6 +1464,13 @@ impl Vmm {
                             if let Err(e) = self.write_metrics() {
                                 error!("Failed to log metrics: {}", e);
                             }
+                        }
+                        EpollDispatch::CollectDirtyLog => {
+                            self.collect_dirty_log_event.fd.read();
+                            let start = std::time::Instant::now();
+                            let dirty_pages = self.get_dirty_page_list();
+                            self.dirty_page_lists.push(dirty_pages);
+                            info!("collecting dirty log took {} us", start.elapsed().as_micros());
                         }
                     }
                 }
