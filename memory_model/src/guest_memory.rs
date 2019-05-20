@@ -149,6 +149,49 @@ impl GuestMemory {
         self.regions.len()
     }
 
+    fn get_bit(num: u64, bit_pos: u64) -> u64 {
+        (num & (1u64 << bit_pos)) >> bit_pos
+    }
+
+    fn get_pfn(num: u64) -> u64 {
+        num & 0x7FFFFFFFFFFFFF
+    }
+
+    fn read_pagemap_addr_range(addr: u64, size: u64) -> Vec<u64> {
+        let pagemap_entry_size = 8;
+        let path = format!("/proc/{}/pagemap", std::process::id());
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        let offset = addr/page_size*pagemap_entry_size;
+
+        let mut pagemap = std::fs::File::open(&path).unwrap();
+        pagemap.seek(std::io::SeekFrom(offset)).unwrap_or_default();
+
+        let num_pages = size/page_size;
+        let mut buf = [0 as u8; pagemap_entry_size];
+        let mut pfns = Vec::new();
+        for _ in 0..num_pages {
+            pagemap.read_exact(&mut buf);
+            let mut entry = 0u64;
+            for i in 0..pagemap_entry_size {
+                entry = (entry << 8) + buf[i];
+            }
+            assert!(GuestMemory::get_bit(entry, 63)); // the page should present
+            pfns.push(GuestMemory::get_pfn(entry));
+        }
+        pfns
+    }
+
+    pub fn get_pagemap(&self) -> Vec<u64> {
+        let mut pfns = new Vec::new();
+        for region in self.regions.iter() {
+            pfns.extend_from_slice(
+                &GuestMemory::read_pagemap_addr_range(region.mapping.as_ptr() as u64,
+                                                        region.mapping.size() as u64)
+            );
+        }
+        pfns
+    }
+
     /// Perform the specified action on each region's addresses.
     pub fn with_regions<F, E>(&self, cb: F) -> result::Result<(), E>
     where
