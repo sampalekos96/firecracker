@@ -7,7 +7,7 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
-use std::io::{Read, Write};
+use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use std::{mem, result};
 
@@ -158,31 +158,32 @@ impl GuestMemory {
     }
 
     fn read_pagemap_addr_range(addr: u64, size: u64) -> Vec<u64> {
-        let pagemap_entry_size = 8;
+        const PM_ENTRY_SIZE:u64 = 8;
         let path = format!("/proc/{}/pagemap", std::process::id());
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
-        let offset = addr/page_size*pagemap_entry_size;
+        let offset = addr/page_size*PM_ENTRY_SIZE;
 
         let mut pagemap = std::fs::File::open(&path).unwrap();
-        pagemap.seek(std::io::SeekFrom(offset)).unwrap_or_default();
+        pagemap.seek(SeekFrom::Start(offset)).unwrap_or_default();
 
         let num_pages = size/page_size;
-        let mut buf = [0 as u8; pagemap_entry_size];
+        let mut buf = [0 as u8; 8];
         let mut pfns = Vec::new();
         for _ in 0..num_pages {
             pagemap.read_exact(&mut buf);
             let mut entry = 0u64;
-            for i in 0..pagemap_entry_size {
-                entry = (entry << 8) + buf[i];
+            for i in 0..PM_ENTRY_SIZE as usize {
+                entry = (entry << 8) + buf[i] as u64;
             }
-            assert!(GuestMemory::get_bit(entry, 63)); // the page should present
+            assert_eq!(GuestMemory::get_bit(entry, 63), 1); // the page should present
             pfns.push(GuestMemory::get_pfn(entry));
         }
         pfns
     }
-
+    
+    /// return the PFNs of the memory pages of this GuestMemory
     pub fn get_pagemap(&self) -> Vec<u64> {
-        let mut pfns = new Vec::new();
+        let mut pfns = Vec::new();
         for region in self.regions.iter() {
             pfns.extend_from_slice(
                 &GuestMemory::read_pagemap_addr_range(region.mapping.as_ptr() as u64,
