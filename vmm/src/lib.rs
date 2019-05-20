@@ -51,7 +51,6 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::Write;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -624,6 +623,9 @@ struct Vmm {
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
+
+    // PFNs of memory pages of self.guest_memory
+    pfns: Vec<u64>,
 }
 
 impl Vmm {
@@ -685,6 +687,7 @@ impl Vmm {
             collect_dirty_log_event,
             dirty_page_lists: Vec::new(),
             seccomp_level,
+            pfns: Vec::new(),
         })
     }
 
@@ -949,6 +952,8 @@ impl Vmm {
                 &self.kvm,
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
+        loop{}
+        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
         Ok(())
     }
 
@@ -1042,12 +1047,12 @@ impl Vmm {
         Ok(vcpus)
     }
 
-    extern "C" fn _handle_sigsegv(sig: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
-       info!("handle_sigsegv is called");
-       assert_eq!(sig, 0);
-       //mprotect_r();
-       //mprotect_w();
-    }
+    //extern "C" fn _handle_sigsegv(sig: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    //   info!("handle_sigsegv is called");
+    //   assert_eq!(sig, 0);
+    //   //mprotect_r();
+    //   //mprotect_w();
+    //}
 
     fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> std::result::Result<(), StartMicrovmError> {
         self.guest_memory.clone().unwrap().mark_regions_nrnw()
@@ -1358,7 +1363,7 @@ impl Vmm {
             .write(true)
             .create(true)
             .open("dirty_page.json").unwrap();
-        serde_json::to_writer(json_file, &self.dirty_page_lists);
+        serde_json::to_writer(json_file, &self.dirty_page_lists).unwrap();
     }
 
     #[allow(clippy::unused_label)]
