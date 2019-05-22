@@ -91,7 +91,7 @@ pub fn setup_sigsegv_handler() -> Result<(), io::Error> {
     sigact.sa_sigaction = sigsegv_handler as usize;
 
     // We set all the bits of sa_mask, so all signals are blocked on the current thread while the
-    // SIGSYS handler is executing. Safe because the parameter is valid and we check the return
+    // SIGSEGV handler is executing. Safe because the parameter is valid and we check the return
     // value.
     if unsafe { sigfillset(&mut sigact.sa_mask as *mut sigset_t) } < 0 {
         return Err(io::Error::last_os_error());

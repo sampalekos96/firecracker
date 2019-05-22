@@ -458,6 +458,14 @@ impl Vcpu {
                     //if old_pfns.is_some() {
                     //    assert_eq!(old_pfns.unwrap(), pfns);
                     //}
+                    let start = std::time::Instant::now();
+                    let pfns = self.guest_mem.get_pagemap();
+                    info!("get_pagemap took {} us, #pages in memory is {}",
+                          start.elapsed().as_micros(),
+                          pfns.len());
+                    if old_pfns.is_some() {
+                        assert_eq!(old_pfns.unwrap(), pfns);
+                    }
 
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
@@ -474,10 +482,6 @@ impl Vcpu {
                         }
                         else if self.magic_port_cnt == 2 {
                             //info!("/sbin/init and openrc finished. #pages in memory is {}", pfns.len());
-                            return Err(Error::VcpuDone)
-                        }
-                        else {
-                            //info!("Python code is executed. #pages in memory is {}", pfns.len());
                             return Err(Error::VcpuDone)
                         }
                     }
