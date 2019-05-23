@@ -46,7 +46,7 @@ pub mod vmm_config;
 mod vstate;
 
 use futures::sync::oneshot;
-use std::collections::{HashMap, BTreeSet};
+use std::collections::{HashMap, BTreeSet, BTreeMap};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
@@ -627,7 +627,7 @@ struct Vmm {
     seccomp_level: u32,
 
     // Yue: PFNs of memory pages of self.guest_memory
-    pfns: Vec<u64>,
+    pfns: BTreeMap<u64, usize>,
 }
 
 impl Vmm {
@@ -689,7 +689,7 @@ impl Vmm {
             collect_dirty_log_event,
             dirty_page_lists: Vec::new(),
             seccomp_level,
-            pfns: Vec::new(),
+            pfns: BTreeMap::new(),
         })
     }
 
@@ -1526,55 +1526,6 @@ impl Vmm {
             return dirty_pages;
         }
         0
-    }
-
-    // Get the list of indexes where bits are set in the number's binary representation
-    pub fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
-        let mut mask: u64 = 1;
-        let mut res: BTreeSet<usize> = BTreeSet::new();
-        for index in 0..64 as usize {
-            if num & mask != 0 {
-                res.insert(num_pages + offset * 65 + index);
-            }
-            mask <<= 1;
-        }
-        return res
-    }
-
-    // Get the list of dirty pages since the last call to this function.
-    // Because this is used for metrics, it swallows most errors and simply returns empty set
-    // if the KVM operation fails.
-    #[cfg(target_arch = "x86_64")]
-    fn get_dirty_page_list(&mut self) -> BTreeSet<usize> {
-        if let Some(ref mem) = self.guest_memory {
-            let mut num_pages: usize = 0;
-            let dirty_pages = mem.map_and_fold(
-                BTreeSet::new(),
-                |(slot, memory_region)| {
-                    let bitmap = self
-                        .vm
-                        .get_fd()
-                        .get_dirty_log(slot as u32, memory_region.size());
-                    match bitmap {
-                        Ok(v) => {
-                            let union = v
-                                .iter()
-                                .enumerate()
-                                .map(|(offset, page)| Vmm::list_set_bits(num_pages, offset, *page))
-                                .fold(BTreeSet::new(),
-                                      |init, page_list| init.union(&page_list).cloned().collect());
-                            num_pages += memory_region.size()/(4<<10);
-                            return union
-                        },
-                        Err(_) => BTreeSet::new(),
-                    }
-                },
-                |dirty_pages, region_dirty_pages|
-                    dirty_pages.union(&region_dirty_pages).cloned().collect(),
-            );
-            return dirty_pages
-        }
-        BTreeSet::new()
     }
 
     fn configure_boot_source(

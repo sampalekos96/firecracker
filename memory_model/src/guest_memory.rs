@@ -10,6 +10,7 @@
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use std::{mem, result};
+use std::collections::BTreeMap;
 
 use guest_address::GuestAddress;
 use mmap::{self, MemoryMapping};
@@ -53,6 +54,11 @@ impl MemoryRegion {
 fn region_end(region: &MemoryRegion) -> GuestAddress {
     // unchecked_add is safe as the region bounds were checked when it was created.
     region.guest_base.unchecked_add(region.mapping.size())
+}
+
+/// utility function to get the bit at `bit_pos` of `num`
+pub fn get_bit(num: u64, bit_pos: u64) -> u64 {
+    (num & (1u64 << bit_pos)) >> bit_pos
 }
 
 /// call libc::mprotect to make given memory page(s) as not accessible
@@ -149,48 +155,46 @@ impl GuestMemory {
         self.regions.len()
     }
 
-    fn get_bit(num: u64, bit_pos: u64) -> u64 {
-        (num & (1u64 << bit_pos)) >> bit_pos
-    }
-
     fn get_pfn(num: u64) -> u64 {
         num & 0x7FFFFFFFFFFFFF
     }
 
-    fn read_pagemap_addr_range(addr: u64, size: u64) -> Vec<u64> {
+    fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64) 
+    -> BTreeMap<u64, usize> {
         const PM_ENTRY_SIZE:u64 = 8;
         let path = format!("/proc/{}/pagemap", std::process::id());
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
         let offset = addr/page_size*PM_ENTRY_SIZE;
 
         let mut pagemap = std::fs::File::open(&path).unwrap();
         pagemap.seek(SeekFrom::Start(offset)).unwrap_or_default();
 
-        let num_pages = size/page_size;
+        let num_pages = (size / page_size) as usize;
         let mut buf = [0 as u8; 8];
-        let mut pfns = Vec::new();
-        for _ in 0..num_pages {
+        let mut pfns = BTreeMap::new();
+        for page_i in 0..num_pages {
             pagemap.read_exact(&mut buf).err();
-            let mut entry = 0u64;
-            for i in 0..PM_ENTRY_SIZE as usize {
-                entry = (entry << 8) + buf[i] as u64;
-            }
+            let entry = u64::from_le_bytes(buf);
             // check if the page is present
-            if GuestMemory::get_bit(entry, 63) == 1 {
-                pfns.push(GuestMemory::get_pfn(entry));
+            if get_bit(entry, 63) == 1 {
+                pfns.insert(GuestMemory::get_pfn(entry), page_i_base + page_i);
             }
         }
         pfns
     }
     
     /// return the PFNs of the memory pages of this GuestMemory
-    pub fn get_pagemap(&self) -> Vec<u64> {
-        let mut pfns = Vec::new();
+    pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+        let mut pfns = BTreeMap::new();
+        let mut page_i_base = 0 as usize;
         for region in self.regions.iter() {
-            pfns.extend_from_slice(
-                &GuestMemory::read_pagemap_addr_range(region.mapping.as_ptr() as u64,
-                                                        region.mapping.size() as u64)
+            pfns.append(
+                &mut GuestMemory::read_pagemap_addr_range(page_i_base,
+                                                          page_size,
+                                                          region.mapping.as_ptr() as u64,
+                                                          region.mapping.size() as u64)
             );
+            page_i_base += region.mapping.size() / page_size as usize;
         }
         pfns
     }

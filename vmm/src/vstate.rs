@@ -6,9 +6,10 @@
 // found in the THIRD-PARTY file.
 
 use std::io;
+use std::io::{Seek, SeekFrom, Write, Read};
 use std::result;
 use std::sync::{Arc, Barrier};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, BTreeMap};
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -408,10 +409,23 @@ impl Vcpu {
     //    Ok(())
     //}
 
+    // Get the list of indexes where bits are set in the number's binary representation
+    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
+        let mut mask: u64 = 1;
+        let mut res: BTreeSet<usize> = BTreeSet::new();
+        for index in 0..64 as usize {
+            if num & mask != 0 {
+                res.insert(num_pages + offset * 64 + index);
+            }
+            mask <<= 1;
+        }
+        return res
+    }
+
     // Get the list of dirty pages since the last call to this function.
     // Because this is used for metrics, it swallows most errors and simply returns empty set
     // if the KVM operation fails.
-    fn get_dirty_page_list(&mut self) -> BTreeSet<usize> {
+    fn get_dirty_page_list(&self) -> BTreeSet<usize> {
         let mut num_pages: usize = 0;
         let dirty_pages = self.guest_mem.map_and_fold(
             BTreeSet::new(),
@@ -424,7 +438,7 @@ impl Vcpu {
                         let union = v
                             .iter()
                             .enumerate()
-                            .map(|(offset, page)| super::Vmm::list_set_bits(num_pages, offset, *page))
+                            .map(|(offset, page)| Vcpu::list_set_bits(num_pages, offset, *page))
                             .fold(BTreeSet::new(),
                                   |init, page_list| init.union(&page_list).cloned().collect());
                         num_pages += memory_region.size()/(4<<10);
@@ -439,9 +453,66 @@ impl Vcpu {
         dirty_pages
     }
 
+    /// set all pfns in pagemap to idle
+    fn clear_accessed_log(sorted_pfns: &Vec<u64>) {
+        let path = "/sys/kernel/mm/page_idle/bitmap";
+        let mut idle_log = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+
+        let seek_offset = (sorted_pfns[0] / 64) * 8;
+        idle_log.seek(SeekFrom::Start(seek_offset)).err();
+
+        let buf_size: usize = 8 * (1 + sorted_pfns[sorted_pfns.len()-1] / 64 - sorted_pfns[0] / 64) as usize;
+        let buf = vec![0xff as u8; buf_size];
+        idle_log.write_all(&buf).err();
+    }
+
+    fn read_accessed_log(pagemap: &BTreeMap<u64, usize>, sorted_pfns: &Vec<u64>) -> BTreeSet<usize> {
+        // open the bitmap file
+        let path = "/sys/kernel/mm/page_idle/bitmap";
+        let mut idle_log = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+        // decide the start index,
+        // pfn/64 the index into the array with entry size 8B
+        // pfn/64 * 8 number of bytes to skip
+        let seek_offset = (sorted_pfns[0] / 64) * 8;
+        idle_log.seek(SeekFrom::Start(seek_offset)).err();
+        // decide number of bytes to read
+        let buf_size: usize = 8 * (1 + sorted_pfns[sorted_pfns.len()-1] / 64 - sorted_pfns[0] / 64) as usize;
+        //println!("smallest pfn = {} largest pfn = {}", sorted_pfns[0], sorted_pfns[sorted_pfns.len()-1]);
+        let mut buf = vec![0 as u8; buf_size];
+        idle_log.read_exact(&mut buf).err();
+
+        let mut accessed_list = BTreeSet::new();
+        let mut buf_i = 0 as usize;
+        let mut bitmap_i = sorted_pfns[0] / 64;
+        for (pfn, page_i) in pagemap.iter() {
+            while pfn / 64 != bitmap_i {
+                bitmap_i += 1;
+                buf_i += 8;
+            }
+            let mut entry = 0u64;
+            for i in 0..8 as usize {
+                entry = (entry << 8) + buf[i+buf_i] as u64;
+            }
+            let bit_pos = pfn % 64;
+            if memory_model::get_bit(entry, bit_pos) == 0 {
+                accessed_list.insert(*page_i);
+            }
+        }
+        
+        accessed_list
+    }
+
+    fn get_and_clear_accessed_log(&self) -> BTreeSet<usize> {
+        let pagemap = self.guest_mem.get_pagemap();
+        let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
+        
+        let ret = Vcpu::read_accessed_log(&pagemap, &sorted_pfns);
+        Vcpu::clear_accessed_log(&sorted_pfns);
+
+        ret
+    }
 
     fn run_emulation(&mut self) -> Result<()> {
-        let mut old_pfns: Option<Vec<u64>> = None;
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -450,30 +521,14 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::IoOut(addr, data) => {
-                    //let start = std::time::Instant::now();
-                    //let pfns = self.guest_mem.get_pagemap();
-                    //info!("get_pagemap took {} us, #pages in memory is {}",
-                    //      start.elapsed().as_micros(),
-                    //      pfns.len());
-                    //if old_pfns.is_some() {
-                    //    assert_eq!(old_pfns.unwrap(), pfns);
-                    //}
-                    let start = std::time::Instant::now();
-                    let pfns = self.guest_mem.get_pagemap();
-                    info!("get_pagemap took {} us, #pages in memory is {}",
-                          start.elapsed().as_micros(),
-                          pfns.len());
-                    if old_pfns.is_some() {
-                        assert_eq!(old_pfns.unwrap(), pfns);
-                    }
-
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
+                        let pfns = self.guest_mem.get_pagemap();
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
-                            //info!("Received BOOT COMPLETE signal. #pages in memory is {}", pfns.len());
+                            info!("Received BOOT COMPLETE signal. #pages in memory is {}", pfns.len());
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
                             //self._set_himem_readonly()?;
@@ -481,12 +536,14 @@ impl Vcpu {
                             return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
-                            //info!("/sbin/init and openrc finished. #pages in memory is {}", pfns.len());
+                            info!("/sbin/init and openrc finished. #pages in memory is {}", pfns.len());
+                            return Err(Error::VcpuDone)
+                        }
+                        else if self.magic_port_cnt == 3 {
+                            info!("Python done. #pages in memory is {}", pfns.len());
                             return Err(Error::VcpuDone)
                         }
                     }
-
-                    //old_pfns = Some(pfns);
 
                     self.io_bus.write(u64::from(addr), data);
                     METRICS.vcpu.exit_io_out.inc();
@@ -551,8 +608,15 @@ impl Vcpu {
                     // Why do we check for these if we only return EINVAL?
                     libc::EAGAIN => Ok(()),
                     libc::EINTR => {
-                        info!("vm exits with errno == EINTR");
+                        //info!("vm exits with errno == EINTR");
                         //Err(Error::VcpuUnhandledKvmExit)
+                        //let pfns = self.guest_mem.get_pagemap();
+                        let accessed_pages = self.get_and_clear_accessed_log();
+                        let dirtied_pages = self.get_dirty_page_list();
+                        info!("# pages accessed {} # pages dirtied {}  # pages only read {}",
+                              accessed_pages.len(),
+                              dirtied_pages.len(),
+                              accessed_pages.difference(&dirtied_pages).collect::<BTreeSet<_>>().len());
                         Ok(())
                     },
                     //libc::EFAULT => {
