@@ -43,7 +43,7 @@ extern "C" {
 
 /// Returns the minimum (inclusive) real-time signal number.
 #[allow(non_snake_case)]
-fn SIGRTMIN() -> c_int {
+pub fn SIGRTMIN() -> c_int {
     unsafe { __libc_current_sigrtmin() }
 }
 

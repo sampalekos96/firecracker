@@ -339,6 +339,17 @@ impl Clone for VmFd {
 }
 
 impl VmFd {
+    /// KVM_INTERRUPT
+    pub fn interrupt(&self) -> Result<()> {
+        let interrupt = kvm_interrupt { irq: 1u32 }; 
+        let ret = unsafe { ioctl_with_ref(self, KVM_INTERRUPT(), &interrupt) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    
     /// Creates/modifies a guest physical memory slot using `KVM_SET_USER_MEMORY_REGION`.
     ///
     /// See the documentation on the `KVM_SET_USER_MEMORY_REGION` ioctl.

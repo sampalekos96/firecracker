@@ -75,7 +75,7 @@ use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
-pub use sigsys_handler::{setup_sigsys_handler, setup_sigsegv_handler};
+pub use sigsys_handler::*;
 use sys_util::{EventFd, Terminal};
 use vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
 use vmm_config::drive::{BlockDeviceConfig, BlockDeviceConfigs, DriveError};
@@ -618,13 +618,15 @@ struct Vmm {
     from_api: Receiver<Box<VmmAction>>,
 
     write_metrics_event: EpollEvent<TimerFd>,
+
+    // Yue: dirty log related
     collect_dirty_log_event: EpollEvent<TimerFd>,
     dirty_page_lists: Vec<BTreeSet<usize>>,
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
 
-    // PFNs of memory pages of self.guest_memory
+    // Yue: PFNs of memory pages of self.guest_memory
     pfns: Vec<u64>,
 }
 
@@ -952,8 +954,10 @@ impl Vmm {
                 &self.kvm,
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
-        loop{}
+
         self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+        assert_eq!(self.pfns.len(), 0);
+
         Ok(())
     }
 
@@ -1055,8 +1059,8 @@ impl Vmm {
     //}
 
     fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> std::result::Result<(), StartMicrovmError> {
-        self.guest_memory.clone().unwrap().mark_regions_nrnw()
-            .map_err(|e| StartMicrovmError::GuestMemory(e))?;
+        //self.guest_memory.clone().unwrap().mark_regions_nrnw()
+        //    .map_err(|e| StartMicrovmError::GuestMemory(e))?;
         //unsafe {
         //    register_signal_handler(libc::SIGSEGV,
         //                            SignalHandler::Siginfo(Vmm::handle_sigsegv),
@@ -1117,7 +1121,8 @@ impl Vmm {
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, done_barriers, seccomp_level, vcpu_exit_evt, vcpu_done_evt);
+                        vcpu.run(vcpu_thread_barrier, done_barriers, seccomp_level, vcpu_exit_evt,
+                                 vcpu_done_evt);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1270,15 +1275,27 @@ impl Vmm {
             .load_kernel()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+        info!("after load_kernel() #pages present in memory is {}", self.pfns.len());
+
         self.configure_system()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+
+        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+        info!("after configure_system() #pages present in memory is {}", self.pfns.len());
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+        info!("after register_events() #pages present in memory is {}", self.pfns.len());
+
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+
+        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+        info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
@@ -1472,10 +1489,11 @@ impl Vmm {
                         }
                         EpollDispatch::CollectDirtyLog => {
                             self.collect_dirty_log_event.fd.read();
-                            let start = std::time::Instant::now();
-                            let dirty_pages = self.get_dirty_page_list();
-                            self.dirty_page_lists.push(dirty_pages);
-                            info!("collecting dirty log took {} us", start.elapsed().as_micros());
+                            //self.vm.get_fd().interrupt();
+                            //let start = std::time::Instant::now();
+                            //let dirty_pages = self.get_dirty_page_list();
+                            //self.dirty_page_lists.push(dirty_pages);
+                            //info!("collecting dirty log took {} us", start.elapsed().as_micros());
                         }
                     }
                 }
@@ -1511,7 +1529,7 @@ impl Vmm {
     }
 
     // Get the list of indexes where bits are set in the number's binary representation
-    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
+    pub fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
         let mut mask: u64 = 1;
         let mut res: BTreeSet<usize> = BTreeSet::new();
         for index in 0..64 as usize {

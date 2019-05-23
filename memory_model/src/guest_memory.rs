@@ -170,13 +170,15 @@ impl GuestMemory {
         let mut buf = [0 as u8; 8];
         let mut pfns = Vec::new();
         for _ in 0..num_pages {
-            pagemap.read_exact(&mut buf);
+            pagemap.read_exact(&mut buf).err();
             let mut entry = 0u64;
             for i in 0..PM_ENTRY_SIZE as usize {
                 entry = (entry << 8) + buf[i] as u64;
             }
-            assert_eq!(GuestMemory::get_bit(entry, 63), 1); // the page should present
-            pfns.push(GuestMemory::get_pfn(entry));
+            // check if the page is present
+            if GuestMemory::get_bit(entry, 63) == 1 {
+                pfns.push(GuestMemory::get_pfn(entry));
+            }
         }
         pfns
     }
@@ -229,7 +231,7 @@ impl GuestMemory {
 
     /// perform specified action on himem regions
     pub fn mark_regions_nrnw(&self) -> Result<()> {
-        for (index, region) in self.regions.iter().enumerate() {
+        for (_index, region) in self.regions.iter().enumerate() {
             mprotect_none(region.mapping.as_ptr(), region.mapping.size())?;
         }
         Ok(())

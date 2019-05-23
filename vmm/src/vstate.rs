@@ -8,6 +8,7 @@
 use std::io;
 use std::result;
 use std::sync::{Arc, Barrier};
+use std::collections::BTreeSet;
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -407,7 +408,40 @@ impl Vcpu {
     //    Ok(())
     //}
 
+    // Get the list of dirty pages since the last call to this function.
+    // Because this is used for metrics, it swallows most errors and simply returns empty set
+    // if the KVM operation fails.
+    fn get_dirty_page_list(&mut self) -> BTreeSet<usize> {
+        let mut num_pages: usize = 0;
+        let dirty_pages = self.guest_mem.map_and_fold(
+            BTreeSet::new(),
+            |(slot, memory_region)| {
+                let bitmap = self
+                    ._vmfd
+                    .get_dirty_log(slot as u32, memory_region.size());
+                match bitmap {
+                    Ok(v) => {
+                        let union = v
+                            .iter()
+                            .enumerate()
+                            .map(|(offset, page)| super::Vmm::list_set_bits(num_pages, offset, *page))
+                            .fold(BTreeSet::new(),
+                                  |init, page_list| init.union(&page_list).cloned().collect());
+                        num_pages += memory_region.size()/(4<<10);
+                        return union
+                    },
+                    Err(_) => BTreeSet::new(),
+                }
+            },
+            |dirty_pages, region_dirty_pages|
+                dirty_pages.union(&region_dirty_pages).cloned().collect(),
+        );
+        dirty_pages
+    }
+
+
     fn run_emulation(&mut self) -> Result<()> {
+        let mut old_pfns: Option<Vec<u64>> = None;
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -416,13 +450,22 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::IoOut(addr, data) => {
+                    //let start = std::time::Instant::now();
+                    //let pfns = self.guest_mem.get_pagemap();
+                    //info!("get_pagemap took {} us, #pages in memory is {}",
+                    //      start.elapsed().as_micros(),
+                    //      pfns.len());
+                    //if old_pfns.is_some() {
+                    //    assert_eq!(old_pfns.unwrap(), pfns);
+                    //}
+
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
-                            info!("Received BOOT COMPLETE signal");
+                            //info!("Received BOOT COMPLETE signal. #pages in memory is {}", pfns.len());
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
                             //self._set_himem_readonly()?;
@@ -430,14 +473,17 @@ impl Vcpu {
                             return Err(Error::VcpuDone);
                         }
                         else if self.magic_port_cnt == 2 {
-                            info!("/sbin/init and openrc finished");
+                            //info!("/sbin/init and openrc finished. #pages in memory is {}", pfns.len());
                             return Err(Error::VcpuDone)
                         }
                         else {
-                            info!("Python code is executed");
+                            //info!("Python code is executed. #pages in memory is {}", pfns.len());
                             return Err(Error::VcpuDone)
                         }
                     }
+
+                    //old_pfns = Some(pfns);
+
                     self.io_bus.write(u64::from(addr), data);
                     METRICS.vcpu.exit_io_out.inc();
                     Ok(())
@@ -499,11 +545,15 @@ impl Vcpu {
             Err(ref e) => {
                 match e.raw_os_error().unwrap() {
                     // Why do we check for these if we only return EINVAL?
-                    libc::EAGAIN | libc::EINTR => Ok(()),
-                    libc::EFAULT => {
-                        info!("Bad Address");
+                    libc::EAGAIN => Ok(()),
+                    libc::EINTR => {
+                        info!("vm exits with errno == EINTR");
+                        //Err(Error::VcpuUnhandledKvmExit)
                         Ok(())
                     },
+                    //libc::EFAULT => {
+                    //    info!("Bad Address");
+                    //},
                     _ => {
                         METRICS.vcpu.failures.inc();
                         error!("Failure during vcpu run: {}", e);
@@ -540,6 +590,17 @@ impl Vcpu {
         }
 
         thread_barrier.wait();
+
+        let my_pthread_t = unsafe { libc::pthread_self() };
+        std::thread::Builder::new()
+            .name("kill_thread".to_string())
+            .spawn(move || {
+                const ONE_MILLI_TO_MICRO: u32 = 1000;
+                loop {
+                    unsafe { libc::usleep(ONE_MILLI_TO_MICRO) };
+                    unsafe { libc::pthread_kill(my_pthread_t, libc::SIGUSR1) };
+                }
+            }).err();
 
         loop {
             let ret = self.run_emulation();
