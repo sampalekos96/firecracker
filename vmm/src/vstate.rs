@@ -481,6 +481,7 @@ impl Vcpu {
         let mut buf = vec![0 as u8; buf_size];
         idle_log.read_exact(&mut buf).err();
 
+        let mut byte_array = [0u8; 8];
         let mut accessed_list = BTreeSet::new();
         let mut buf_i = 0 as usize;
         let mut bitmap_i = sorted_pfns[0] / 64;
@@ -489,10 +490,10 @@ impl Vcpu {
                 bitmap_i += 1;
                 buf_i += 8;
             }
-            let mut entry = 0u64;
-            for i in 0..8 as usize {
-                entry = (entry << 8) + buf[i+buf_i] as u64;
+            for i in 0..8 {
+                byte_array[i] = buf[buf_i+i];
             }
+            let entry = u64::from_le_bytes(byte_array);
             let bit_pos = pfn % 64;
             if memory_model::get_bit(entry, bit_pos) == 0 {
                 accessed_list.insert(*page_i);
@@ -669,7 +670,6 @@ impl Vcpu {
                     unsafe { libc::pthread_kill(my_pthread_t, libc::SIGUSR1) };
                 }
             }).err();
-
         loop {
             let ret = self.run_emulation();
             if !ret.is_ok() {

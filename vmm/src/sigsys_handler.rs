@@ -21,6 +21,7 @@ use logger::{Metric, LOGGER, METRICS};
 const SI_OFF_SYSCALL: isize = 6;
 
 const SYS_SECCOMP_CODE: i32 = 1;
+const SEGV_ACCERR: i32 = 2;
 
 // This no longer relies on sys_util::register_signal_handler(), which is a lot weirder than it
 // should be (at least for this use case). Also, we want to change the sa_mask field of the
@@ -115,10 +116,10 @@ extern "C" fn sigsegv_handler(
     let si_code = unsafe { (*info).si_code };
 
     // Sanity check. The condition should never be true.
-    if num != si_signo || num != libc::SIGSEGV || si_code != SYS_SECCOMP_CODE as i32 {
-        // Safe because we're terminating the process anyway.
-        unsafe { libc::_exit(i32::from(super::FC_EXIT_CODE_UNEXPECTED_ERROR)) };
-    }
+    assert_eq!(num, si_signo);
+    assert_eq!(num, libc::SIGSEGV);
+    assert_eq!(si_code, SEGV_ACCERR);
+
     println!("sigsegv_handler is called");
 }
 
