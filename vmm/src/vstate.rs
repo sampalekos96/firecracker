@@ -503,8 +503,7 @@ impl Vcpu {
         accessed_list
     }
 
-    fn get_and_clear_accessed_log(&self) -> BTreeSet<usize> {
-        let pagemap = self.guest_mem.get_pagemap();
+    fn get_and_clear_accessed_log(&self, pagemap: &BTreeMap<u64, usize>) -> BTreeSet<usize> {
         let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
         
         let ret = Vcpu::read_accessed_log(&pagemap, &sorted_pfns);
@@ -513,7 +512,33 @@ impl Vcpu {
         ret
     }
 
-    fn run_emulation(&mut self) -> Result<()> {
+    fn calculate_intersection(sets: &Vec<BTreeSet<usize>>) -> Vec<Vec<BTreeSet<usize>>> {
+        let mut unioned_setup: BTreeSet<usize>;
+        let mut unioned_app: BTreeSet<usize>;
+        let mut unions: Vec<Vec<BTreeSet<usize>>> = Vec::new();
+        for i in 0..(sets.len()-1) {
+            unioned_setup = BTreeSet::new();
+            unioned_app = BTreeSet::new();
+            let mut tuple: Vec<BTreeSet<usize>> = Vec::new();
+            for j in 0..=i {
+                unioned_setup = unioned_setup.union(&sets[j]).cloned().collect();
+            }
+            for j in (i+1)..sets.len() {
+                unioned_app = unioned_app.union(&sets[j]).cloned().collect();
+            }
+            let unioned = unioned_app.intersection(&unioned_setup).cloned().collect();
+            tuple.push(unioned_setup);
+            tuple.push(unioned_app);
+            tuple.push(unioned);
+            unions.push(tuple);
+        }
+        unions
+    }
+
+    fn run_emulation(&mut self,
+                     accessed: &mut Vec<BTreeSet<usize>>,
+                     dirtied: &mut Vec<BTreeSet<usize>>,
+                     read: &mut Vec<BTreeSet<usize>>) -> Result<()> {
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -525,24 +550,67 @@ impl Vcpu {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
-                        let pfns = self.guest_mem.get_pagemap();
+                        let pagemap = self.guest_mem.get_pagemap();
+                        let accessed_pages = self.get_and_clear_accessed_log(&pagemap);
+                        let dirtied_pages = self.get_dirty_page_list();
+                        let mut log = std::fs::OpenOptions::new().append(true).open("pages.log").unwrap();
+                        write!(log, "{},{},{},{}\n",
+                              pagemap.len(),
+                              accessed_pages.len(),
+                              dirtied_pages.len(),
+                              accessed_pages.difference(&dirtied_pages).collect::<BTreeSet<_>>().len()).ok();
+                        read.push(accessed_pages.difference(&dirtied_pages).cloned().collect());
+                        accessed.push(accessed_pages);
+                        dirtied.push(dirtied_pages);
+
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
-                            info!("Received BOOT COMPLETE signal. #pages in memory is {}", pfns.len());
+                            info!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
+                            // #pages present, #pages accessed, #pages dirtied, #pages only read
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
                             //self._set_himem_readonly()?;
                             //info!("Set guest memory to read-only");
-                            return Err(Error::VcpuDone);
-                        }
-                        else if self.magic_port_cnt == 2 {
-                            info!("/sbin/init and openrc finished. #pages in memory is {}", pfns.len());
-                            return Err(Error::VcpuDone)
-                        }
-                        else if self.magic_port_cnt == 3 {
-                            info!("Python done. #pages in memory is {}", pfns.len());
-                            return Err(Error::VcpuDone)
+                            //return Err(Error::VcpuDone);
+                        } else if self.magic_port_cnt == 2 {
+                            info!("/sbin/init and openrc finished. #pages in memory is {}", pagemap.len());
+                            //return Err(Error::VcpuDone)
+                        } else if self.magic_port_cnt == 3 {
+                            info!("Python is set up. #pages in memory is {}", pagemap.len());
+                            //return Err(Error::VcpuDone)
+                        } else if self.magic_port_cnt == 4 {
+                            info!("Python imports finished. #pages in memory is {}", pagemap.len());
+                        } else if self.magic_port_cnt == 5 {
+                            info!("App done. #pages in memory is {}", pagemap.len());
+                            write!(log, "{},{}\n",
+                                   dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
+                                   dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
+                            // the end of the application, we do the set intersections and exit
+                            let accessed_intersect = Vcpu::calculate_intersection(&accessed);
+                            let dirtied_intersect = Vcpu::calculate_intersection(&dirtied);
+                            //let read_intersect = Vcpu::calculate_intersection(&read);
+                            //for i in 0..accessed_intersect.len() {
+                            //    write!(log, "{},{},{}\n",
+                            //           accessed_intersect[i].len(),
+                            //           dirtied_intersect[i].len(),
+                            //           read_intersect[i].len()).ok();
+                            //}
+                            //for tuple in accessed_intersect.iter() {
+                            //    write!(log, "{},{},{}\n",
+                            //           tuple[0].len(),
+                            //           tuple[2].len(),
+                            //           tuple[1].len()).ok();
+                            //}
+                            for i in 0..accessed_intersect.len() {
+                                write!(log, "{},{},{}\n",
+                                       dirtied_intersect[i][0].len(),
+                                       accessed_intersect[i][1].len(),
+                                       dirtied_intersect[i][0]
+                                        .intersection(&accessed_intersect[i][1])
+                                        .collect::<BTreeSet<_>>().len()).ok();
+                            }
+                            return Err(Error::VcpuUnhandledKvmExit)
                         }
                     }
 
@@ -609,12 +677,12 @@ impl Vcpu {
                     // Why do we check for these if we only return EINVAL?
                     libc::EAGAIN => Ok(()),
                     libc::EINTR => {
-                        //info!("vm exits with errno == EINTR");
-                        //Err(Error::VcpuUnhandledKvmExit)
-                        //let pfns = self.guest_mem.get_pagemap();
-                        let accessed_pages = self.get_and_clear_accessed_log();
+                        let pagemap = self.guest_mem.get_pagemap();
+                        let accessed_pages = self.get_and_clear_accessed_log(&pagemap);
                         let dirtied_pages = self.get_dirty_page_list();
-                        info!("# pages accessed {} # pages dirtied {}  # pages only read {}",
+                        // #pages present, #pages accessed, #pages dirtied, #pages only read
+                        info!("{},{},{},{}",
+                              pagemap.len(),
                               accessed_pages.len(),
                               dirtied_pages.len(),
                               accessed_pages.difference(&dirtied_pages).collect::<BTreeSet<_>>().len());
@@ -660,18 +728,25 @@ impl Vcpu {
 
         thread_barrier.wait();
 
-        let my_pthread_t = unsafe { libc::pthread_self() };
-        std::thread::Builder::new()
-            .name("kill_thread".to_string())
-            .spawn(move || {
-                const ONE_MILLI_TO_MICRO: u32 = 1000;
-                loop {
-                    unsafe { libc::usleep(ONE_MILLI_TO_MICRO) };
-                    unsafe { libc::pthread_kill(my_pthread_t, libc::SIGUSR1) };
-                }
-            }).err();
+        //let my_pthread_t = unsafe { libc::pthread_self() };
+        //std::thread::Builder::new()
+        //    .name("kill_thread".to_string())
+        //    .spawn(move || {
+        //        const ONE_MILLI_TO_MICRO: u32 = 1000;
+        //        loop {
+        //            unsafe { libc::usleep(ONE_MILLI_TO_MICRO) };
+        //            unsafe { libc::pthread_kill(my_pthread_t, libc::SIGUSR1) };
+        //        }
+        //    }).err();
+        std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("pages.log").ok();
+        let pagemap = self.guest_mem.get_pagemap();
+        let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
+        Vcpu::clear_accessed_log(&sorted_pfns);
+        let mut accessed = Vec::new();
+        let mut dirtied = Vec::new();
+        let mut read = Vec::new();
         loop {
-            let ret = self.run_emulation();
+            let ret = self.run_emulation(&mut accessed, &mut dirtied, &mut read);
             if !ret.is_ok() {
                 match ret.err() {
                     Some(Error::VcpuDone) => {

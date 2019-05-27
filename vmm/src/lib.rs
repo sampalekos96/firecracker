@@ -1134,12 +1134,12 @@ impl Vmm {
         default_syscalls::set_seccomp_level(self.seccomp_level)
             .map_err(StartMicrovmError::SeccompFilters)?;
 
-        vcpus_thread_barrier.wait();
-
         #[cfg(target_arch = "x86_64")]
         self.get_dirty_page_count();
         #[cfg(target_arch = "x86_64")]
         info!("The dirty log is cleared");
+
+        vcpus_thread_barrier.wait();
 
         Ok(())
     }
