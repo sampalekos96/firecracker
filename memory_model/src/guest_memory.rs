@@ -49,6 +49,13 @@ impl MemoryRegion {
     pub fn size(&self) -> usize {
         self.mapping.size()
     }
+
+    /// dump the memory region to a file
+    pub fn dump(&self) -> Vec<u8> {
+        let mut buf = vec![0u8; self.mapping.size()];
+        assert_eq!(self.mapping.read_slice(buf.as_mut_slice(), 0).unwrap(), self.mapping.size());
+        buf
+    }
 }
 
 fn region_end(region: &MemoryRegion) -> GuestAddress {
@@ -159,7 +166,7 @@ impl GuestMemory {
         num & 0x7FFFFFFFFFFFFF
     }
 
-    fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64) 
+    fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
     -> BTreeMap<u64, usize> {
         const PM_ENTRY_SIZE:u64 = 8;
         let path = format!("/proc/{}/pagemap", std::process::id());
@@ -181,7 +188,7 @@ impl GuestMemory {
         }
         pfns
     }
-    
+
     /// return the PFNs of the memory pages of this GuestMemory
     pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
@@ -197,6 +204,15 @@ impl GuestMemory {
             page_i_base += region.mapping.size() / page_size as usize;
         }
         pfns
+    }
+
+    /// return a byte vector containing the whole guest memory
+    pub fn dump_regions(&self) -> Vec<u8> {
+        let mut dump = Vec::new();
+        for region in self.regions.iter() {
+            dump.append(&mut region.dump());
+        }
+        dump
     }
 
     /// Perform the specified action on each region's addresses.

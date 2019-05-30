@@ -567,6 +567,9 @@ impl Vcpu {
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
                             info!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
+                            let mut mem_dump = std::fs::OpenOptions::new()
+                                .write(true).truncate(true).create(true).open("boot_mem_dump").unwrap();
+                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                             // #pages present, #pages accessed, #pages dirtied, #pages only read
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
@@ -575,9 +578,15 @@ impl Vcpu {
                             //return Err(Error::VcpuDone);
                         } else if self.magic_port_cnt == 2 {
                             info!("/sbin/init and openrc finished. #pages in memory is {}", pagemap.len());
+                            let mut mem_dump = std::fs::OpenOptions::new()
+                                .write(true).truncate(true).create(true).open("init_mem_dump").unwrap();
+                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                             //return Err(Error::VcpuDone)
                         } else if self.magic_port_cnt == 3 {
                             info!("Python is set up. #pages in memory is {}", pagemap.len());
+                            let mut mem_dump = std::fs::OpenOptions::new()
+                                .write(true).truncate(true).create(true).open("python_mem_dump").unwrap();
+                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                             //return Err(Error::VcpuDone)
                         } else if self.magic_port_cnt == 4 {
                             info!("Python imports finished. #pages in memory is {}", pagemap.len());
