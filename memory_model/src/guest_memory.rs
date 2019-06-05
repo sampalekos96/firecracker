@@ -56,6 +56,10 @@ impl MemoryRegion {
         assert_eq!(self.mapping.read_slice(buf.as_mut_slice(), 0).unwrap(), self.mapping.size());
         buf
     }
+
+    pub fn load(&self, buf: &[u8]) {
+        self.mapping.write_slice(buf, 0).ok();
+    }
 }
 
 fn region_end(region: &MemoryRegion) -> GuestAddress {
@@ -213,6 +217,16 @@ impl GuestMemory {
             dump.append(&mut region.dump());
         }
         dump
+    }
+
+    /// load the memory with the content passed in buffer
+    pub fn load_regions(&self, buf: &Vec<u8>) {
+        let mut pos = 0usize;
+        for region in self.regions.iter() {
+            region.load(&buf[pos..pos+region.size()]);
+            pos += region.size();
+        }
+        assert_eq!(pos, buf.len());
     }
 
     /// Perform the specified action on each region's addresses.

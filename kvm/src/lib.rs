@@ -14,12 +14,14 @@ extern crate libc;
 extern crate kvm_bindings;
 #[macro_use]
 extern crate sys_util;
+extern crate fc_util;
 
 mod cap;
 mod ioctl_defs;
 
 use std::fs::File;
 use std::io;
+use std::io::{Read, Write};
 use std::mem::size_of;
 use std::os::raw::*;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
@@ -33,6 +35,7 @@ use sys_util::EventFd;
 use sys_util::{
     ioctl, ioctl_with_mut_ptr, ioctl_with_mut_ref, ioctl_with_ptr, ioctl_with_ref, ioctl_with_val,
 };
+use fc_util::now_cputime_us;
 
 /// Wrapper over possible Kvm method Result.
 pub type Result<T> = result::Result<T, io::Error>;
@@ -339,9 +342,14 @@ impl Clone for VmFd {
 }
 
 impl VmFd {
+    /// return the size of kvm_run
+    pub fn get_run_size(&self) -> usize {
+        self.run_size
+    }
+
     /// KVM_INTERRUPT
     pub fn interrupt(&self) -> Result<()> {
-        let interrupt = kvm_interrupt { irq: 1u32 }; 
+        let interrupt = kvm_interrupt { irq: 1u32 };
         let ret = unsafe { ioctl_with_ref(self, KVM_INTERRUPT(), &interrupt) };
         if ret == 0 {
             Ok(())
@@ -349,7 +357,7 @@ impl VmFd {
             Err(io::Error::last_os_error())
         }
     }
-    
+
     /// Creates/modifies a guest physical memory slot using `KVM_SET_USER_MEMORY_REGION`.
     ///
     /// See the documentation on the `KVM_SET_USER_MEMORY_REGION` ioctl.
@@ -549,7 +557,7 @@ impl VmFd {
     /// # Errors
     /// Returns an error when the VM fd is invalid or the VCPU memory cannot be mapped correctly.
     ///
-    pub fn create_vcpu(&self, id: u8) -> Result<VcpuFd> {
+    pub fn create_vcpu(&self, id: u8, from_file: bool) -> Result<VcpuFd> {
         // Safe because we know that vm is a VM fd and we verify the return result.
         #[allow(clippy::cast_lossless)]
         let vcpu_fd = unsafe { ioctl_with_val(&self.vm, KVM_CREATE_VCPU(), id as c_ulong) };
@@ -562,6 +570,18 @@ impl VmFd {
         let vcpu = unsafe { File::from_raw_fd(vcpu_fd) };
 
         let kvm_run_ptr = KvmRunWrapper::from_fd(&vcpu, self.run_size)?;
+
+        // fill the kvm_run from the kvm_run_dump file
+        if from_file {
+            let start = now_cputime_us();
+            let mut ifile = std::fs::File::open("kvm_run_dump").unwrap();
+            let mut buf = vec![0u8; self.run_size];
+            ifile.read_exact(buf.as_mut_slice()).ok();
+            let mut slice:&mut [u8] = unsafe { std::slice::from_raw_parts_mut(
+                   kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, self.run_size) };
+            slice.write(buf.as_slice()).ok();
+            println!("loading kvm_run took {}us", now_cputime_us()-start);
+        }
 
         Ok(VcpuFd { vcpu, kvm_run_ptr })
     }
@@ -650,6 +670,18 @@ pub struct VcpuFd {
 }
 
 impl VcpuFd {
+    /// Dump kvm_run
+    pub fn dump_kvm_run(&self, run_size: usize) {
+        let mut ofile = std::fs::OpenOptions::new()
+            .write(true).truncate(true).create(true).open("kvm_run_dump").unwrap();
+
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(
+                self.kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, run_size) };
+        let mut buf = vec![0u8; run_size];
+        buf.as_mut_slice().write(slice).ok();
+        ofile.write_all(buf.as_slice()).ok();
+    }
+
     /// Gets the VCPU registers using the `KVM_GET_REGS` ioctl.
     ///
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]

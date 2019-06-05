@@ -51,6 +51,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
+use std::io::Read;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -89,6 +90,9 @@ use vmm_config::net::{
 #[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
 use vstate::{Vcpu, Vm};
+
+/// from file
+pub static mut FROM_FILE: bool = false;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -955,9 +959,6 @@ impl Vmm {
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
 
-        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-        assert_eq!(self.pfns.len(), 0);
-
         Ok(())
     }
 
@@ -1043,20 +1044,15 @@ impl Vmm {
             let mmio_bus = device_manager.bus.clone();
             let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
+
+            let from_file_ = unsafe { FROM_FILE };
             #[cfg(target_arch = "x86_64")]
-            vcpu.configure(&self.vm_config, entry_addr, &self.vm)
+            vcpu.configure(&self.vm_config, entry_addr, &self.vm, from_file_)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
             vcpus.push(vcpu);
         }
         Ok(vcpus)
     }
-
-    //extern "C" fn _handle_sigsegv(sig: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
-    //   info!("handle_sigsegv is called");
-    //   assert_eq!(sig, 0);
-    //   //mprotect_r();
-    //   //mprotect_w();
-    //}
 
     fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> std::result::Result<(), StartMicrovmError> {
         //self.guest_memory.clone().unwrap().mark_regions_nrnw()
@@ -1296,6 +1292,19 @@ impl Vmm {
 
         self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
         info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
+
+        // load dumped memory
+        let from_file_ = unsafe { FROM_FILE };
+        if from_file_ {
+            let start = now_cputime_us();
+            let mut mem_dump = std::fs::File::open("boot_mem_dump").unwrap();
+            let mut buf = Vec::new();
+            mem_dump.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf.len(),
+            self.guest_memory.clone().unwrap().end_addr().offset() as usize);
+            self.guest_memory.clone().unwrap().load_regions(&buf);
+            println!("loading memory took {}us", now_cputime_us()-start);
+        }
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;

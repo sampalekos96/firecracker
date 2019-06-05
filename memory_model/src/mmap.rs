@@ -65,6 +65,7 @@ impl MemoryMapping {
                 0,
             )
         };
+        unsafe { libc::memset(addr, 0, size) };
         if addr == libc::MAP_FAILED {
             return Err(Error::SystemCallFailed(io::Error::last_os_error()));
         }
