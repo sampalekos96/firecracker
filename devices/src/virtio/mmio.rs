@@ -210,6 +210,7 @@ impl MmioDevice {
     /// the device before attempting to re-initialize.
     fn update_driver_status(&mut self, v: u32) {
         // match changed bits
+        //println!("update driver status to {}", v);
         match !self.driver_status & v {
             DEVICE_ACKNOWLEDGE if self.driver_status == DEVICE_INIT => {
                 self.driver_status = v;

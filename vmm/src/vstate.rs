@@ -753,11 +753,11 @@ impl Vcpu {
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
                             info!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
-                            let mut mem_dump = std::fs::OpenOptions::new()
-                                .write(true).truncate(true).create(true).open("boot_mem_dump").unwrap();
-                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
-                            self.write_regs_sregs_to_file();
-                            self.fd.dump_kvm_run(self._vmfd.get_run_size());
+                            //let mut mem_dump = std::fs::OpenOptions::new()
+                            //    .write(true).truncate(true).create(true).open("boot_mem_dump").unwrap();
+                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
+                            //self.write_regs_sregs_to_file();
+                            //self.fd.dump_kvm_run(self._vmfd.get_run_size());
                             // #pages present, #pages accessed, #pages dirtied, #pages only read
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
@@ -765,24 +765,24 @@ impl Vcpu {
                             //info!("Set guest memory to read-only");
                             //return Err(Error::VcpuDone);
                         } else if self.magic_port_cnt == 2 {
-                            info!("/sbin/init and openrc finished. #pages in memory is {}", pagemap.len());
-                            let mut mem_dump = std::fs::OpenOptions::new()
-                                .write(true).truncate(true).create(true).open("init_mem_dump").unwrap();
-                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
+                            info!("Init finished. #pages in memory is {}", pagemap.len());
+                            //let mut mem_dump = std::fs::OpenOptions::new()
+                            //    .write(true).truncate(true).create(true).open("init_mem_dump").unwrap();
+                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                             //return Err(Error::VcpuDone)
                         } else if self.magic_port_cnt == 3 {
-                            info!("Python is set up. #pages in memory is {}", pagemap.len());
-                            let mut mem_dump = std::fs::OpenOptions::new()
-                                .write(true).truncate(true).create(true).open("python_mem_dump").unwrap();
-                            mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
+                            info!("Runtime is up. #pages in memory is {}", pagemap.len());
+                            //let mut mem_dump = std::fs::OpenOptions::new()
+                            //    .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
+                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                             //return Err(Error::VcpuDone)
                         } else if self.magic_port_cnt == 4 {
-                            info!("Python imports finished. #pages in memory is {}", pagemap.len());
+                            info!("Imports finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 5 {
                             info!("App done. #pages in memory is {}", pagemap.len());
-                            write!(log, "{},{}\n",
-                                   dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
-                                   dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
+                            //write!(log, "{},{}\n",
+                            //       dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
+                            //       dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
                             // the end of the application, we do the set intersections and exit
                             let accessed_intersect = Vcpu::calculate_intersection(&accessed);
                             let dirtied_intersect = Vcpu::calculate_intersection(&dirtied);
