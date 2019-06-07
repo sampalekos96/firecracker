@@ -388,13 +388,11 @@ impl KvmContext {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum EpollDispatch {
-    Done,
     Exit,
     Stdin,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
-    CollectDirtyLog,
 }
 
 struct MaybeHandler {
@@ -596,14 +594,11 @@ struct Vmm {
     kernel_config: Option<KernelConfig>,
     vcpus_handles: Vec<thread::JoinHandle<()>>,
     exit_evt: Option<EpollEvent<EventFd>>,
-    done_evt: Option<EpollEvent<EventFd>>,
-    done_barriers: Vec<Arc<Barrier>>,
     vm: Vm,
 
     // Guest VM devices.
     mmio_device_manager: Option<MMIODeviceManager>,
     legacy_device_manager: LegacyDeviceManager,
-    legacy_device_manager2: LegacyDeviceManager,
     drive_handler_id_map: HashMap<String, usize>,
     net_handler_id_map: HashMap<String, usize>,
 
@@ -622,10 +617,6 @@ struct Vmm {
     from_api: Receiver<Box<VmmAction>>,
 
     write_metrics_event: EpollEvent<TimerFd>,
-
-    // Yue: dirty log related
-    collect_dirty_log_event: EpollEvent<TimerFd>,
-    dirty_page_lists: Vec<BTreeSet<usize>>,
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
@@ -654,13 +645,6 @@ impl Vmm {
                 EpollDispatch::WriteMetrics,
             )
             .expect("Cannot add write metrics TimerFd to epoll.");
-        let collect_dirty_log_event = epoll_context
-            .add_event(
-                // non-blocking & close on exec
-                TimerFd::new_custom(ClockId::Monotonic, true, true).map_err(Error::TimerFd)?,
-                EpollDispatch::CollectDirtyLog,
-            )
-            .expect("Cannot add write metrics TimerFd to epoll.");
 
         let block_device_configs = BlockDeviceConfigs::new();
         let kvm = KvmContext::new()?;
@@ -674,12 +658,9 @@ impl Vmm {
             kernel_config: None,
             vcpus_handles: vec![],
             exit_evt: None,
-            done_evt: None,
-            done_barriers: vec![Arc::new(Barrier::new(2usize)); 3],
             vm,
             mmio_device_manager: None,
             legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
-            legacy_device_manager2: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -690,8 +671,6 @@ impl Vmm {
             api_event,
             from_api,
             write_metrics_event,
-            collect_dirty_log_event,
-            dirty_page_lists: Vec::new(),
             seccomp_level,
             pfns: BTreeMap::new(),
         })
@@ -1085,7 +1064,6 @@ impl Vmm {
         // We're going in reverse so we can `.pop()` on the vec and still maintain order.
         for cpu_id in (0..vcpu_count).rev() {
             let vcpu_thread_barrier = vcpus_thread_barrier.clone();
-            let done_barriers = self.done_barriers.clone();
             // If the lock is poisoned, it's OK to panic.
             let vcpu_exit_evt = self
                 .legacy_device_manager
@@ -1095,30 +1073,16 @@ impl Vmm {
                 .get_reset_evt_clone()
                 .map_err(|_| StartMicrovmError::EventFd)?;
 
-            let vcpu_done_evt = self
-                .legacy_device_manager2
-                .i8042
-                .lock()
-                .expect("Failed to start VCPUs due to poisoned i8042 lock")
-                .get_reset_evt_clone()
-                .map_err(|_| StartMicrovmError::EventFd)?;
-
             // `unwrap` is safe since we are asserting that the `vcpu_count` is equal to the number
             // of items of `vcpus` vector.
             let mut vcpu = vcpus.pop().unwrap();
-            let timer_state = TimerState::Periodic {
-                current: Duration::from_millis(5u64),
-                interval: Duration::from_millis(5u64),
-            };
-            self.collect_dirty_log_event.fd.set_state(timer_state, SetTimeFlags::Default);
 
             let seccomp_level = self.seccomp_level;
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, done_barriers, seccomp_level, vcpu_exit_evt,
-                                 vcpu_done_evt);
+                        vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1202,7 +1166,7 @@ impl Vmm {
 
     fn register_events(&mut self) -> std::result::Result<(), StartMicrovmError> {
         // If the lock is poisoned, it's OK to panic.
-        let mut event_fd = self
+        let event_fd = self
             .legacy_device_manager
             .i8042
             .lock()
@@ -1214,19 +1178,6 @@ impl Vmm {
             .add_event(event_fd, EpollDispatch::Exit)
             .map_err(|_| StartMicrovmError::RegisterEvent)?;
         self.exit_evt = Some(exit_epoll_evt);
-
-        event_fd = self
-            .legacy_device_manager2
-            .i8042
-            .lock()
-            .expect("Failed to register events on the event fd due to poisoned lock")
-            .get_reset_evt_clone()
-            .map_err(|_| StartMicrovmError::EventFd)?;
-        let done_epoll_evt = self
-            .epoll_context
-            .add_event(event_fd, EpollDispatch::Done)
-            .map_err(|_| StartMicrovmError::RegisterEvent)?;
-        self.done_evt = Some(done_epoll_evt);
 
         self.epoll_context
             .enable_stdin_event()
@@ -1384,14 +1335,6 @@ impl Vmm {
         }
     }
 
-    fn dump_dirty_page_lists_as_json(&self) {
-        let json_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open("dirty_page.json").unwrap();
-        serde_json::to_writer(json_file, &self.dirty_page_lists).unwrap();
-    }
-
     #[allow(clippy::unused_label)]
     fn run_control(&mut self) -> Result<()> {
         const EPOLL_EVENTS_LEN: usize = 100;
@@ -1399,8 +1342,6 @@ impl Vmm {
         let mut events = vec![epoll::Event::new(epoll::Events::empty(), 0); EPOLL_EVENTS_LEN];
 
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
-
-        let mut done_cnt = 0usize;
 
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
@@ -1411,17 +1352,6 @@ impl Vmm {
 
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
-                        EpollDispatch::Done => {
-                            match self.done_evt {
-                                Some(ref ev) => {
-                                    ev.fd.read().map_err(Error::EventFd)?;
-                                }
-                                None => warn!("leftover boot-done-evt in epollcontext!"),
-                            }
-
-                            self.done_barriers[done_cnt].wait();
-                            done_cnt += 1usize;
-                        }
                         EpollDispatch::Exit => {
                             match self.exit_evt {
                                 Some(ref ev) => {
@@ -1429,8 +1359,6 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-                            self.collect_dirty_log_event.fd.set_state(TimerState::Disarmed, SetTimeFlags::Default);
-                            self.dump_dirty_page_lists_as_json();
                             self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
                         EpollDispatch::Stdin => {
@@ -1495,14 +1423,6 @@ impl Vmm {
                             if let Err(e) = self.write_metrics() {
                                 error!("Failed to log metrics: {}", e);
                             }
-                        }
-                        EpollDispatch::CollectDirtyLog => {
-                            self.collect_dirty_log_event.fd.read();
-                            //self.vm.get_fd().interrupt();
-                            //let start = std::time::Instant::now();
-                            //let dirty_pages = self.get_dirty_page_list();
-                            //self.dirty_page_lists.push(dirty_pages);
-                            //info!("collecting dirty log took {} us", start.elapsed().as_micros());
                         }
                     }
                 }

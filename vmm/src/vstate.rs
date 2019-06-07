@@ -81,8 +81,6 @@ pub enum Error {
     VcpuSpawn(std::io::Error),
     /// Unexpected KVM_RUN exit reason
     VcpuUnhandledKvmExit,
-    // Boot done
-    VcpuDone,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     /// Error getting the dirty log
     GetDirtyLog(io::Error),
@@ -908,10 +906,8 @@ impl Vcpu {
     pub fn run(
         &mut self,
         thread_barrier: Arc<Barrier>,
-        done_barriers: Vec<Arc<Barrier>>,
         seccomp_level: u32,
         vcpu_exit_evt: EventFd,
-        vcpu_done_evt: EventFd,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -947,20 +943,6 @@ impl Vcpu {
             let ret = self.run_emulation(&mut accessed, &mut dirtied, &mut read);
             if !ret.is_ok() {
                 match ret.err() {
-                    Some(Error::VcpuDone) => {
-                        if let Err(e) = vcpu_done_evt.write(1) {
-                            METRICS.vcpu.failures.inc();
-                            error!("Failed signaling vcpu boot complete event: {}", e);
-                        }
-                        done_barriers[self.magic_port_cnt-1].wait();
-                        info!("Pass done_barrier {}", self.magic_port_cnt);
-                        if self.magic_port_cnt == 3 {
-                            if let Err(e) = vcpu_exit_evt.write(1) {
-                                METRICS.vcpu.failures.inc();
-                                error!("Failed signaling vcpu exit event: {}", e);
-                            }
-                        }
-                    },
                     _ => {
                         // Nothing we need do for the success case.
                         if let Err(e) = vcpu_exit_evt.write(1) {
@@ -972,7 +954,6 @@ impl Vcpu {
                 }
             }
         }
-
     }
 }
 
