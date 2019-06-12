@@ -20,6 +20,7 @@ extern crate serde_derive;
 extern crate serde_json;
 extern crate time;
 extern crate timerfd;
+extern crate byteorder;
 
 extern crate arch;
 #[cfg(target_arch = "x86_64")]
@@ -45,13 +46,14 @@ mod sigsys_handler;
 pub mod vmm_config;
 mod vstate;
 
+use byteorder::{ByteOrder, LittleEndian};
 use futures::sync::oneshot;
 use std::collections::{HashMap, BTreeSet, BTreeMap};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::Read;
+use std::io::{Read, BufReader};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -93,6 +95,8 @@ use vstate::{Vcpu, Vm};
 
 /// from file
 pub static mut FROM_FILE: bool = false;
+/// do the memory dump/register dump
+pub static mut DUMP: bool = false;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -553,6 +557,7 @@ impl EpollContext {
         match maybe.handler {
             Some(ref mut v) => Ok(v.as_mut()),
             None => {
+                println!("get the handler of the device at {}", device_idx);
                 // This should only be called in response to an epoll trigger.
                 // Moreover, this branch of the match should only be active on the first call
                 // (the first epoll event for this device), therefore the channel is guaranteed
@@ -1245,16 +1250,64 @@ impl Vmm {
         info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
 
         // load dumped memory
-        let from_file_ = unsafe { FROM_FILE };
-        if from_file_ {
+        let from_file = unsafe { FROM_FILE };
+        if from_file {
             let start = now_cputime_us();
-            let mut mem_dump = std::fs::File::open("boot_mem_dump").unwrap();
-            let mut buf = Vec::new();
-            mem_dump.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf.len(),
-            self.guest_memory.clone().unwrap().end_addr().offset() as usize);
-            self.guest_memory.clone().unwrap().load_regions(&buf);
+            let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
+            //let mut buf = Vec::new();
+            //mem_dump.read_to_end(&mut buf).unwrap();
+            let mut buf = vec![0u8; 32 * 1048576];
+            mem_dump.read_exact(buf.as_mut_slice()).ok();
             println!("loading memory took {}us", now_cputime_us()-start);
+            // let's manually replay collapsed writes to rootfs
+            let base = 0xd000_0000u64;
+            let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+            let mut data = [0u8; 4];
+            let zero = [0u8; 4];
+            
+            bus.write(base+0x70, &zero);
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x70, &data);
+            LittleEndian::write_u32(data.as_mut(), 3);
+            bus.write(base+0x70, &data);
+            
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x14, &data);
+            bus.write(base+0x14, &zero);
+
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x24, &data);
+            bus.write(base+0x20, &data);
+
+            bus.write(base+0x24, &zero);
+            LittleEndian::write_u32(data.as_mut(), 512);
+            bus.write(base+0x20, &data);
+
+            LittleEndian::write_u32(data.as_mut(), 11);
+            bus.write(base+0x70, &data);
+            
+            bus.write(base+0x30, &zero);
+            LittleEndian::write_u32(data.as_mut(), 256);
+            bus.write(base+0x38, &data);
+            LittleEndian::write_u32(data.as_mut(), 121372672);
+            bus.write(base+0x80, &data);
+            bus.write(base+0x84, &zero);
+            LittleEndian::write_u32(data.as_mut(), 121376768);
+            bus.write(base+0x90, &data);
+            bus.write(base+0x94, &zero);
+            LittleEndian::write_u32(data.as_mut(), 121380864);
+            bus.write(base+0xa0, &data);
+            bus.write(base+0xa4, &zero);
+            
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x44, &data);
+            
+            LittleEndian::write_u32(data.as_mut(), 15);
+            bus.write(base+0x70, &data);
+
+            let reader = BufReader::new(std::fs::File::open("queues.json").unwrap());
+            let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
+            self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
         }
 
         self.start_vcpus(vcpus)
@@ -1358,6 +1411,11 @@ impl Vmm {
                                     ev.fd.read().map_err(Error::EventFd)?;
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
+                            }
+                            if unsafe { DUMP } {
+                                let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
+                                std::fs::write("queues.json",
+                                                serde_json::to_string(&queues).unwrap()).ok();
                             }
                             self.stop(i32::from(FC_EXIT_CODE_OK));
                         }

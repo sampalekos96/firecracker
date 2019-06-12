@@ -4,6 +4,8 @@
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
+extern crate serde;
+use self::serde::{Serialize, Deserialize};
 
 use std::cmp::min;
 use std::num::Wrapping;
@@ -201,7 +203,7 @@ impl<'a, 'b> Iterator for AvailIter<'a, 'b> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 /// A virtio queue's parameters.
 pub struct Queue {
     /// The maximal size in elements offered by the device

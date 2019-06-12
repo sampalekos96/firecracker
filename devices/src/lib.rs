@@ -63,6 +63,9 @@ pub trait EpollHandler: Send {
         event_flags: u32,
         payload: EpollHandlerPayload,
     ) -> Result<()>;
+
+    fn get_queues(&self) -> Vec<virtio::queue::Queue>;
+    fn set_queues(&mut self, other: &Vec<virtio::queue::Queue>); 
 }
 
 #[derive(Debug)]

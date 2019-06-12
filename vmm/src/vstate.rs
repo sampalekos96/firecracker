@@ -8,7 +8,7 @@
 use fc_util::now_cputime_us;
 
 use std::io;
-use std::io::{Seek, SeekFrom, Write, Read, BufRead};
+use std::io::{Seek, SeekFrom, Write, Read, BufReader};
 use std::result;
 use std::sync::{Arc, Barrier};
 use std::collections::{BTreeSet, BTreeMap};
@@ -19,8 +19,7 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{kvm_dtable, kvm_segment, __u64, __u32, __u16, __u8,
-    kvm_regs, kvm_sregs,
+use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -284,106 +283,18 @@ impl Vcpu {
         })
     }
 
-    fn kvm_segment_from_strings(lines: &[String]) -> kvm_segment {
-        let mut seg: kvm_segment = Default::default();
-        seg.base = lines[0].parse::<u64>().unwrap() as __u64;
-        seg.limit = lines[1].parse::<u32>().unwrap() as __u32;
-        seg.selector = lines[2].parse::<u16>().unwrap() as __u16;
-        seg.type_ = lines[3].parse::<u8>().unwrap() as __u8;
-        seg.present = lines[4].parse::<u8>().unwrap() as __u8;
-        seg.dpl = lines[5].parse::<u8>().unwrap() as __u8;
-        seg.db = lines[6].parse::<u8>().unwrap() as __u8;
-        seg.s = lines[7].parse::<u8>().unwrap() as __u8;
-        seg.l = lines[8].parse::<u8>().unwrap() as __u8;
-        seg.g = lines[9].parse::<u8>().unwrap() as __u8;
-        seg.avl = lines[10].parse::<u8>().unwrap() as __u8;
-        seg.unusable = lines[11].parse::<u8>().unwrap() as __u8;
-        seg.padding = lines[12].parse::<u8>().unwrap() as __u8;
-
-        seg
-    }
-
-    fn kvm_dtable_from_strings(lines: &[String]) -> kvm_dtable {
-        let mut dtable: kvm_dtable = Default::default();
-        dtable.base = lines[0].parse::<u64>().unwrap() as __u64;
-        dtable.limit = lines[1].parse::<u16>().unwrap() as __u16;
-        dtable.padding[0] = lines[2].parse::<u16>().unwrap() as __u16;
-        dtable.padding[1] = lines[3].parse::<u16>().unwrap() as __u16;
-        dtable.padding[2] = lines[4].parse::<u16>().unwrap() as __u16;
-
-        dtable
-    }
-
     fn setup_regs_sregs_from_file(&self) {
-        let ifile = std::fs::File::open("regs_sregs").unwrap();
-        let mut regs: kvm_regs = Default::default();
-        let mut sregs: kvm_sregs = Default::default();
-        let reader = std::io::BufReader::new(ifile);
-        let mut lines = Vec::new();
-        for line in reader.lines() {
-            lines.push(line.unwrap());
-        }
-        regs.rax = lines[0].parse::<u64>().unwrap() as __u64;
-        regs.rbx = lines[1].parse::<u64>().unwrap() as __u64;
-        regs.rcx = lines[2].parse::<u64>().unwrap() as __u64;
-        regs.rdx = lines[3].parse::<u64>().unwrap() as __u64;
-        regs.rsi = lines[4].parse::<u64>().unwrap() as __u64;
-        regs.rdi = lines[5].parse::<u64>().unwrap() as __u64;
-        regs.rsp = lines[6].parse::<u64>().unwrap() as __u64;
-        regs.rbp = lines[7].parse::<u64>().unwrap() as __u64;
-        regs.r8 = lines[8].parse::<u64>().unwrap() as __u64;
-        regs.r9 = lines[9].parse::<u64>().unwrap() as __u64;
-        regs.r10 = lines[10].parse::<u64>().unwrap() as __u64;
-        regs.r11 = lines[11].parse::<u64>().unwrap() as __u64;
-        regs.r12 = lines[12].parse::<u64>().unwrap() as __u64;
-        regs.r13 = lines[13].parse::<u64>().unwrap() as __u64;
-        regs.r14 = lines[14].parse::<u64>().unwrap() as __u64;
-        regs.r15 = lines[15].parse::<u64>().unwrap() as __u64;
-        regs.rip = lines[16].parse::<u64>().unwrap() as __u64;
-        regs.rflags = lines[17].parse::<u64>().unwrap() as __u64;
-        //kvm_sregs
-        let mut pos = 18usize;
-        sregs.cs = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.ds = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.es = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.fs = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.gs = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.ss = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.tr = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.ldt = Vcpu::kvm_segment_from_strings(&lines[pos..pos+13]);
-        pos += 13;
-        sregs.gdt = Vcpu::kvm_dtable_from_strings(&lines[pos..pos+5]);
-        pos += 5;
-        sregs.idt = Vcpu::kvm_dtable_from_strings(&lines[pos..pos+5]);
-        pos += 5;
-        sregs.cr0 = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.cr2 = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.cr3 = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.cr4 = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.cr8 = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.efer = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.apic_base = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.interrupt_bitmap[0] = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.interrupt_bitmap[1] = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.interrupt_bitmap[2] = lines[pos].parse::<u64>().unwrap() as __u64;
-        pos += 1;
-        sregs.interrupt_bitmap[3] = lines[pos].parse::<u64>().unwrap() as __u64;
+        let reader = BufReader::new(std::fs::File::open("kvm_msrs.json").unwrap());
+        let msrs: kvm_msrs = serde_json::from_reader(reader).unwrap();
+        self.fd.set_msrs(&msrs).ok();
+        
+        let reader = BufReader::new(std::fs::File::open("kvm_regs.json").unwrap());
+        let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
+        self.fd.set_regs(&regs).ok();
+
+        let reader = BufReader::new(std::fs::File::open("kvm_sregs.json").unwrap());
+        let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
+        self.fd.set_sregs(&sregs).ok();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -442,76 +353,16 @@ impl Vcpu {
         Ok(())
     }
 
-    fn write_kvm_segment_to_file(ofile: &mut std::fs::File, seg: &kvm_segment) {
-        write!(ofile, "{}\n", seg.base).ok();
-        write!(ofile, "{}\n", seg.limit).ok();
-        write!(ofile, "{}\n", seg.selector).ok();
-        write!(ofile, "{}\n", seg.type_).ok();
-        write!(ofile, "{}\n", seg.present).ok();
-        write!(ofile, "{}\n", seg.dpl).ok();
-        write!(ofile, "{}\n", seg.db).ok();
-        write!(ofile, "{}\n", seg.s).ok();
-        write!(ofile, "{}\n", seg.l).ok();
-        write!(ofile, "{}\n", seg.g).ok();
-        write!(ofile, "{}\n", seg.avl).ok();
-        write!(ofile, "{}\n", seg.unusable).ok();
-        write!(ofile, "{}\n", seg.padding).ok();
-    }
-
-    fn write_kvm_dtable_to_file(ofile: &mut std::fs::File, dtable: &kvm_dtable) {
-        write!(ofile, "{}\n", dtable.base).ok();
-        write!(ofile, "{}\n", dtable.limit).ok();
-        write!(ofile, "{}\n", dtable.padding[0]).ok();
-        write!(ofile, "{}\n", dtable.padding[1]).ok();
-        write!(ofile, "{}\n", dtable.padding[2]).ok();
-    }
-
     fn write_regs_sregs_to_file(&self) {
-        let mut ofile = std::fs::OpenOptions::new()
-            .write(true).truncate(true).create(true).open("regs_sregs").unwrap();
-        // kvm_regs
+        let mut msrs: kvm_msrs = Default::default();
+        self.fd.get_msrs(&mut msrs).ok();
+        std::fs::write("kvm_msrs.json", serde_json::to_string(&msrs).unwrap()).ok();
+
         let regs = self.fd.get_regs().unwrap();
-        write!(ofile, "{}\n", regs.rax).ok();
-        write!(ofile, "{}\n", regs.rbx).ok();
-        write!(ofile, "{}\n", regs.rcx).ok();
-        write!(ofile, "{}\n", regs.rdx).ok();
-        write!(ofile, "{}\n", regs.rsi).ok();
-        write!(ofile, "{}\n", regs.rdi).ok();
-        write!(ofile, "{}\n", regs.rsp).ok();
-        write!(ofile, "{}\n", regs.rbp).ok();
-        write!(ofile, "{}\n", regs.r8).ok();
-        write!(ofile, "{}\n", regs.r9).ok();
-        write!(ofile, "{}\n", regs.r10).ok();
-        write!(ofile, "{}\n", regs.r11).ok();
-        write!(ofile, "{}\n", regs.r12).ok();
-        write!(ofile, "{}\n", regs.r13).ok();
-        write!(ofile, "{}\n", regs.r14).ok();
-        write!(ofile, "{}\n", regs.r15).ok();
-        write!(ofile, "{}\n", regs.rip).ok();
-        write!(ofile, "{}\n", regs.rflags).ok();
-        // kvm_sregs
+        std::fs::write("kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
+
         let sregs = self.fd.get_sregs().unwrap();
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.cs);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.ds);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.es);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.fs);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.gs);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.ss);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.tr);
-        Vcpu::write_kvm_segment_to_file(&mut ofile, &sregs.ldt);
-        Vcpu::write_kvm_dtable_to_file(&mut ofile, &sregs.gdt);
-        Vcpu::write_kvm_dtable_to_file(&mut ofile, &sregs.idt);
-        write!(ofile, "{}\n", sregs.cr0).ok();
-        write!(ofile, "{}\n", sregs.cr2).ok();
-        write!(ofile, "{}\n", sregs.cr3).ok();
-        write!(ofile, "{}\n", sregs.cr4).ok();
-        write!(ofile, "{}\n", sregs.cr8).ok();
-        write!(ofile, "{}\n", sregs.efer).ok();
-        write!(ofile, "{}\n", sregs.apic_base).ok();
-        write!(ofile, "{}\n", sregs.interrupt_bitmap[0]).ok();
-        write!(ofile, "{}\n", sregs.interrupt_bitmap[1]).ok();
-        write!(ofile, "{}\n", sregs.interrupt_bitmap[2]).ok();
-        write!(ofile, "{}\n", sregs.interrupt_bitmap[3]).ok();
+        std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
     }
 
     fn _set_himem_readonly(&self) -> Result<()> {
@@ -750,12 +601,7 @@ impl Vcpu {
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             super::Vmm::log_boot_time(&self.create_ts);
-                            info!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
-                            //let mut mem_dump = std::fs::OpenOptions::new()
-                            //    .write(true).truncate(true).create(true).open("boot_mem_dump").unwrap();
-                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
-                            //self.write_regs_sregs_to_file();
-                            //self.fd.dump_kvm_run(self._vmfd.get_run_size());
+                            println!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
                             // #pages present, #pages accessed, #pages dirtied, #pages only read
                             // set guest memory to read only
                             //info!("Setting guest memory to read-only");
@@ -764,16 +610,17 @@ impl Vcpu {
                             //return Err(Error::VcpuDone);
                         } else if self.magic_port_cnt == 2 {
                             info!("Init finished. #pages in memory is {}", pagemap.len());
-                            //let mut mem_dump = std::fs::OpenOptions::new()
-                            //    .write(true).truncate(true).create(true).open("init_mem_dump").unwrap();
-                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
-                            //return Err(Error::VcpuDone)
                         } else if self.magic_port_cnt == 3 {
                             info!("Runtime is up. #pages in memory is {}", pagemap.len());
-                            //let mut mem_dump = std::fs::OpenOptions::new()
-                            //    .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
-                            //mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
-                            //return Err(Error::VcpuDone)
+                            println!("Runtime is up. #pages in memory is {}", pagemap.len());
+                            if unsafe{ super::DUMP } {
+                                let mut mem_dump = std::fs::OpenOptions::new()
+                                    .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
+                                mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
+                                self.write_regs_sregs_to_file();
+                                self.fd.dump_kvm_run(self._vmfd.get_run_size());
+                                return Err(Error::VcpuUnhandledKvmExit)
+                            }
                         } else if self.magic_port_cnt == 4 {
                             info!("Imports finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 5 {
@@ -782,8 +629,8 @@ impl Vcpu {
                             //       dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
                             //       dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
                             // the end of the application, we do the set intersections and exit
-                            let accessed_intersect = Vcpu::calculate_intersection(&accessed);
-                            let dirtied_intersect = Vcpu::calculate_intersection(&dirtied);
+                            //let accessed_intersect = Vcpu::calculate_intersection(&accessed);
+                            //let dirtied_intersect = Vcpu::calculate_intersection(&dirtied);
                             //let read_intersect = Vcpu::calculate_intersection(&read);
                             //for i in 0..accessed_intersect.len() {
                             //    write!(log, "{},{},{}\n",
@@ -797,14 +644,14 @@ impl Vcpu {
                             //           tuple[2].len(),
                             //           tuple[1].len()).ok();
                             //}
-                            for i in 0..accessed_intersect.len() {
-                                write!(log, "{},{},{}\n",
-                                       dirtied_intersect[i][0].len(),
-                                       accessed_intersect[i][1].len(),
-                                       dirtied_intersect[i][0]
-                                        .intersection(&accessed_intersect[i][1])
-                                        .collect::<BTreeSet<_>>().len()).ok();
-                            }
+                            //for i in 0..accessed_intersect.len() {
+                            //    write!(log, "{},{},{}\n",
+                            //           dirtied_intersect[i][0].len(),
+                            //           accessed_intersect[i][1].len(),
+                            //           dirtied_intersect[i][0]
+                            //            .intersection(&accessed_intersect[i][1])
+                            //            .collect::<BTreeSet<_>>().len()).ok();
+                            //}
                             return Err(Error::VcpuUnhandledKvmExit)
                         }
                     }

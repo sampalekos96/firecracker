@@ -5,6 +5,7 @@ authors = ["The Chromium OS Authors"]
 
 [dependencies]
 libc = ">=0.2.39"
+serde = { version = "^1.0.27", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = ">=3.0.2"

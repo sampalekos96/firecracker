@@ -253,18 +253,19 @@ impl Request {
             }
             RequestType::Out => {
                 //println!("write from memory at 0x{:x} {} Bytes to disk sector {}", self.data_addr.offset(), self.data_len, self.sector);
-                mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
-                    .map_err(ExecuteError::Write)?;
-                METRICS.block.write_count.add(self.data_len as usize);
+                //mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
+                //    .map_err(ExecuteError::Write)?;
+                //METRICS.block.write_count.add(self.data_len as usize);
             }
-            RequestType::Flush => match disk.flush() {
-                Ok(_) => {
-                    //println!("flush");
-                    METRICS.block.flush_count.inc();
-                    return Ok(0);
-                }
-                Err(e) => return Err(ExecuteError::Flush(e)),
-            },
+            RequestType::Flush => {},
+            //match disk.flush() {
+            //    Ok(_) => {
+            //        //println!("flush");
+            //        METRICS.block.flush_count.inc();
+            //        return Ok(0);
+            //    }
+            //    Err(e) => return Err(ExecuteError::Flush(e)),
+            //},
             RequestType::GetDeviceID => {
                 if (self.data_len as usize) < disk_id.len() {
                     return Err(ExecuteError::BadRequest(Error::InvalidOffset));
@@ -393,6 +394,14 @@ impl BlockEpollHandler {
 }
 
 impl EpollHandler for BlockEpollHandler {
+    fn set_queues(&mut self, other: &Vec<Queue>) {
+        self.queues.clone_from(other);
+    }
+
+    fn get_queues(&self) -> Vec<Queue> {
+        self.queues.clone()
+    }
+
     fn handle_event(
         &mut self,
         device_event: DeviceEventT,

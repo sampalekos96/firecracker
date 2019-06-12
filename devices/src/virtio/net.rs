@@ -498,6 +498,13 @@ impl NetEpollHandler {
 }
 
 impl EpollHandler for NetEpollHandler {
+    fn set_queues(&mut self, _other: &Vec<Queue>) {
+    }
+
+    fn get_queues(&self) -> Vec<Queue> {
+        Vec::new()
+    }
+
     fn handle_event(
         &mut self,
         device_event: DeviceEventT,

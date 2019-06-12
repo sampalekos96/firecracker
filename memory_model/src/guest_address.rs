@@ -6,12 +6,13 @@
 // found in the THIRD-PARTY file.
 
 //! Represents an address in the guest's memory space.
-
+extern crate serde;
+use self::serde::{Serialize, Deserialize};
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::ops::{BitAnd, BitOr};
 
 /// Represents an Address in the guest's memory.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct GuestAddress(pub usize);
 
 impl GuestAddress {

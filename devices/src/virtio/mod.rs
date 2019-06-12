@@ -12,7 +12,7 @@ use std::io::Error as IOError;
 pub mod block;
 mod mmio;
 pub mod net;
-mod queue;
+pub mod queue;
 #[cfg(feature = "vsock")]
 pub mod vhost;
 
