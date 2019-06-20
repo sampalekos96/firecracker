@@ -44,6 +44,10 @@ pub const FS_UPDATE_EVENT: DeviceEventT = 2;
 // Number of DeviceEventT events supported by this implementation.
 pub const BLOCK_EVENTS_COUNT: usize = 3;
 
+// interrupt_evt as RawFd value is initialized
+// inside devices/src/virtio/mmio.rs: MmioDevice::new()
+pub static mut INTERRUPT_EVT: RawFd = -1;
+
 #[derive(Debug)]
 enum Error {
     /// Guest gave us bad memory addresses.
@@ -253,19 +257,18 @@ impl Request {
             }
             RequestType::Out => {
                 //println!("write from memory at 0x{:x} {} Bytes to disk sector {}", self.data_addr.offset(), self.data_len, self.sector);
-                //mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
-                //    .map_err(ExecuteError::Write)?;
-                //METRICS.block.write_count.add(self.data_len as usize);
+                mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
+                    .map_err(ExecuteError::Write)?;
+                METRICS.block.write_count.add(self.data_len as usize);
             }
-            RequestType::Flush => {},
-            //match disk.flush() {
-            //    Ok(_) => {
-            //        //println!("flush");
-            //        METRICS.block.flush_count.inc();
-            //        return Ok(0);
-            //    }
-            //    Err(e) => return Err(ExecuteError::Flush(e)),
-            //},
+            RequestType::Flush =>  match disk.flush() {
+                Ok(_) => {
+                    //println!("flush");
+                    METRICS.block.flush_count.inc();
+                    return Ok(0);
+                }
+                Err(e) => return Err(ExecuteError::Flush(e)),
+            },
             RequestType::GetDeviceID => {
                 if (self.data_len as usize) < disk_id.len() {
                     return Err(ExecuteError::BadRequest(Error::InvalidOffset));
@@ -373,11 +376,26 @@ impl BlockEpollHandler {
     fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-        self.interrupt_evt.write(1).map_err(|e| {
+        //self.interrupt_evt.write(1).map_err(|e| {
+        //    error!("Failed to signal used queue: {:?}", e);
+        //    METRICS.block.event_fails.inc();
+        //    DeviceError::FailedSignalingUsedQueue(e)
+        //})
+        let ret = unsafe {
+            libc::write(
+                INTERRUPT_EVT,
+                &1u64 as *const u64 as *const libc::c_void,
+                std::mem::size_of::<u64>(),
+            )
+        };
+        if ret <= 0 {
+            let e = io::Error::last_os_error();
             error!("Failed to signal used queue: {:?}", e);
             METRICS.block.event_fails.inc();
-            DeviceError::FailedSignalingUsedQueue(e)
-        })
+            Err(DeviceError::FailedSignalingUsedQueue(e))
+        } else {
+            Ok(())
+        }
     }
 
     fn update_disk_image(&mut self, disk_image: File) -> result::Result<(), DeviceError> {
@@ -419,6 +437,7 @@ impl EpollHandler for BlockEpollHandler {
                         underlying: e,
                     })
                 } else if !self.rate_limiter.is_blocked() && self.process_queue(0) {
+                    println!("process queue");
                     self.signal_used_queue()
                 } else {
                     // While limiter is blocked, don't process any more requests.
@@ -619,6 +638,8 @@ impl VirtioDevice for Block {
             METRICS.block.activate_fails.inc();
             return Err(ActivateError::BadActivate);
         }
+
+        unsafe{ INTERRUPT_EVT = interrupt_evt.as_raw_fd() };
 
         if let Some(disk_image) = self.disk_image.take() {
             let queue_evt = queue_evts.remove(0);

@@ -119,6 +119,39 @@ impl GuestMemory {
         })
     }
 
+    /// Same as new but memory are backed by the provided file
+    pub fn new_from_file(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
+        println!("Guest Memory is backed by runtime_mem_dump");
+        if ranges.is_empty() {
+            return Err(Error::NoMemoryRegions);
+        }
+
+        let mut regions = Vec::<MemoryRegion>::new();
+        for range in ranges.iter() {
+            let mut offset: usize = 0;
+            if let Some(last) = regions.last() {
+                if last
+                    .guest_base
+                    .checked_add(last.mapping.size())
+                    .map_or(true, |a| a > range.0)
+                {
+                    return Err(Error::MemoryRegionOverlap);
+                }
+                offset = last.guest_base.offset();
+            }
+
+            let mapping = MemoryMapping::new_from_file(range.1, offset).map_err(Error::MemoryMappingFailed)?;
+            regions.push(MemoryRegion {
+                mapping,
+                guest_base: range.0,
+            });
+        }
+
+        Ok(GuestMemory {
+            regions: Arc::new(regions),
+        })
+    }
+
     /// Returns the end address of memory.
     ///
     /// # Examples

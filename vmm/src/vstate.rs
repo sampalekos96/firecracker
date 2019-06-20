@@ -19,7 +19,7 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs,
+use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, KVM_IRQFD,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -619,7 +619,36 @@ impl Vcpu {
                                 mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                                 self.write_regs_sregs_to_file();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
-                                return Err(Error::VcpuUnhandledKvmExit)
+                            }
+                            unsafe {
+                                if libc::close(devices::virtio::block::INTERRUPT_EVT) < 0 {
+                                    error!("Failed to close old eventfd: {:?}", std::io::Error::last_os_error());
+                                    return Err(Error::VcpuUnhandledKvmExit)
+                                }
+                                let ret = libc::eventfd(0, libc::EFD_NONBLOCK);
+                                if ret < 0 {
+                                    error!("Failed to create new eventfd: {:?}", std::io::Error::last_os_error());
+                                    return Err(Error::VcpuUnhandledKvmExit)
+                                } else {
+                                    let irqfd = kvm_irqfd {
+                                        fd: ret as u32,
+                                        gsi,
+                                        ..Default::default()
+                                    };
+                                    let ret = sys_util::ioctl_with_ref(self._vmfd, KVM_IRQFD(), &irqfd);
+                                    if ret == 0 {
+                                        let ret2 = libc::dup(ret);
+                                        if ret2 < 0 {
+                                            error!("Failed to duplicate the eventfd: {:?}", std::io::Error::last_os_error());
+                                            return Err(Error::VcpuUnhandledKvmExit)
+                                        } else {
+                                            devices::virtio::block::INTERRUPT_EVT = ret2;
+                                        }
+                                    } else {
+                                        error!("Failed to register irqfd: {:?}", std::io::Error::last_os_error());
+                                        return Err(Error::VcpuUnhandledKvmExit)
+                                    }
+                                }
                             }
                         } else if self.magic_port_cnt == 4 {
                             info!("Imports finished. #pages in memory is {}", pagemap.len());

@@ -97,6 +97,8 @@ use vstate::{Vcpu, Vm};
 pub static mut FROM_FILE: bool = false;
 /// do the memory dump/register dump
 pub static mut DUMP: bool = false;
+/// interrupt_evt as RawFd
+pub static mut INTERRUPT_EVT: libc::c_int = -1;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -930,8 +932,13 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        self.guest_memory =
-            Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        //if unsafe { FROM_FILE } {
+        //    self.guest_memory = 
+        //        Some(GuestMemory::new_from_file(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        //} else {
+            self.guest_memory =
+                Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        //}
         self.vm
             .memory_init(
                 self.guest_memory
@@ -1252,14 +1259,16 @@ impl Vmm {
         // load dumped memory
         let from_file = unsafe { FROM_FILE };
         if from_file {
-            let start = now_cputime_us();
+            //let start = now_cputime_us();
             let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
-            //let mut buf = Vec::new();
-            //mem_dump.read_to_end(&mut buf).unwrap();
-            let mut buf = vec![0u8; 32 * 1048576];
-            mem_dump.read_exact(buf.as_mut_slice()).ok();
-            println!("loading memory took {}us", now_cputime_us()-start);
-            // let's manually replay collapsed writes to rootfs
+            let mut buf = Vec::new();
+            mem_dump.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf.len(), 128*1048576);
+            self.guest_memory.clone().unwrap().write_slice_at_addr(buf.as_slice(), GuestAddress(0)).ok();
+            //let mut buf = vec![0u8; 32 * 1048576];
+            //mem_dump.read_exact(buf.as_mut_slice()).ok();
+            //println!("loading memory took {}us", now_cputime_us()-start);
+            //manually replay writes to mmio device
             let base = 0xd000_0000u64;
             let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
             let mut data = [0u8; 4];
@@ -1285,20 +1294,21 @@ impl Vmm {
 
             LittleEndian::write_u32(data.as_mut(), 11);
             bus.write(base+0x70, &data);
-            
+
             bus.write(base+0x30, &zero);
             LittleEndian::write_u32(data.as_mut(), 256);
             bus.write(base+0x38, &data);
-            LittleEndian::write_u32(data.as_mut(), 121372672);
-            bus.write(base+0x80, &data);
-            bus.write(base+0x84, &zero);
-            LittleEndian::write_u32(data.as_mut(), 121376768);
-            bus.write(base+0x90, &data);
-            bus.write(base+0x94, &zero);
-            LittleEndian::write_u32(data.as_mut(), 121380864);
-            bus.write(base+0xa0, &data);
-            bus.write(base+0xa4, &zero);
             
+            //LittleEndian::write_u32(data.as_mut(), 121372672);
+            //bus.write(base+0x80, &data);
+            //bus.write(base+0x84, &zero);
+            //LittleEndian::write_u32(data.as_mut(), 121376768);
+            //bus.write(base+0x90, &data);
+            //bus.write(base+0x94, &zero);
+            //LittleEndian::write_u32(data.as_mut(), 121380864);
+            //bus.write(base+0xa0, &data);
+            //bus.write(base+0xa4, &zero);
+
             LittleEndian::write_u32(data.as_mut(), 1);
             bus.write(base+0x44, &data);
             

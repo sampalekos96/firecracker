@@ -128,10 +128,6 @@ impl MmioDevice {
         })
     }
 
-    /// dump internal states to file
-    pub fn dump_state() {
-    }
-
     /// Gets the list of queue events that must be triggered whenever the VM writes to
     /// `virtio::NOTIFY_REG_OFFSET` past the MMIO base. Each event must be triggered when the
     /// value being written equals the index of the event in this list.
@@ -456,14 +452,14 @@ impl BusDevice for MmioDevice {
         }
     }
 
-    fn interrupt(&self, irq_mask: u32) {
-        self.interrupt_status
-            .fetch_or(irq_mask as usize, Ordering::SeqCst);
-        // interrupt_evt() is safe to unwrap because the inner interrupt_evt is initialized in the
-        // constructor.
-        // write() is safe to unwrap because the inner syscall is tailored to be safe as well.
-        self.interrupt_evt().unwrap().write(1).unwrap();
-    }
+    //fn interrupt(&self, irq_mask: u32) {
+    //    self.interrupt_status
+    //        .fetch_or(irq_mask as usize, Ordering::SeqCst);
+    //    // interrupt_evt() is safe to unwrap because the inner interrupt_evt is initialized in the
+    //    // constructor.
+    //    // write() is safe to unwrap because the inner syscall is tailored to be safe as well.
+    //    self.interrupt_evt().unwrap().write(1).unwrap();
+    //}
 }
 
 #[cfg(test)]
