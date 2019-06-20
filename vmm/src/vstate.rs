@@ -19,7 +19,7 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, KVM_IRQFD,
+use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_irqfd,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -632,10 +632,10 @@ impl Vcpu {
                                 } else {
                                     let irqfd = kvm_irqfd {
                                         fd: ret as u32,
-                                        gsi,
+                                        gsi: 5,
                                         ..Default::default()
                                     };
-                                    let ret = sys_util::ioctl_with_ref(self._vmfd, KVM_IRQFD(), &irqfd);
+                                    let ret = sys_util::ioctl_with_ref(&self._vmfd, KVM_IRQFD(), &irqfd);
                                     if ret == 0 {
                                         let ret2 = libc::dup(ret);
                                         if ret2 < 0 {
