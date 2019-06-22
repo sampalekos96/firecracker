@@ -98,7 +98,9 @@ pub static mut FROM_FILE: bool = false;
 /// do the memory dump/register dump
 pub static mut DUMP: bool = false;
 /// interrupt_evt as RawFd
-pub static mut INTERRUPT_EVT: libc::c_int = -1;
+pub static mut INTERRUPT_EVT: RawFd = -1;
+/// queue_evt as RawFd
+pub static mut QUEUE_EVT: RawFd = -1;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;

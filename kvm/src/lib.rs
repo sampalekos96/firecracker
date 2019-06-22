@@ -44,6 +44,7 @@ pub use cap::*;
 use ioctl_defs::*;
 pub use kvm_bindings::KVM_API_VERSION;
 pub use ioctl_defs::KVM_IRQFD;
+pub use ioctl_defs::KVM_IOEVENTFD;
 
 /// Taken from Linux Kernel v4.14.13 (arch/x86/include/asm/kvm_host.h)
 pub const MAX_KVM_CPUID_ENTRIES: usize = 80;
