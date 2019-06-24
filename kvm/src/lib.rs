@@ -333,7 +333,7 @@ pub struct VmFd {
     run_size: usize,
 }
 
-// Yue: in order for Vcpu to have a copy of VmFd, this is unsafe if multiple vcpus exist
+// Yue: in order for Vcpu to have a copy of VmFd, assuming vm has one vcpu
 impl Clone for VmFd {
     fn clone(&self) -> VmFd {
         return VmFd {
@@ -353,6 +353,26 @@ impl VmFd {
     pub fn interrupt(&self) -> Result<()> {
         let interrupt = kvm_interrupt { irq: 1u32 };
         let ret = unsafe { ioctl_with_ref(self, KVM_INTERRUPT(), &interrupt) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_GET_IRQCHIP
+    pub fn get_irqchip(&self) -> Result<kvm_irqchip> {
+        let irqchip = kvm_irqchip::default();
+
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_IRQCHIP(), &irqchip) };
+        if ret == 0 {
+            Ok(irqchip)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_IRQCHIP
+    pub fn set_irqchip(&self, irqchip: &kvm_irqchip) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_IRQCHIP(), irqchip) };
         if ret == 0 {
             Ok(())
         } else {
@@ -682,6 +702,46 @@ impl VcpuFd {
         let mut buf = vec![0u8; run_size];
         buf.as_mut_slice().write(slice).ok();
         ofile.write_all(buf.as_slice()).ok();
+    }
+    /// KVM_GET_MP_STATE
+    pub fn get_mp_state(&self) -> Result<kvm_mp_state> {
+        let mp_state = kvm_mp_state::default();
+
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_MP_STATE(), &mp_state) };
+        if ret == 0 {
+            Ok(mp_state)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_MP_STATE
+    pub fn set_mp_state(&self, mp_state: &kvm_mp_state) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_MP_STATE(), mp_state) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_GET_VCPU_EVENTS
+    pub fn get_vcpu_events(&self) -> Result<kvm_vcpu_events> {
+        let vcpu_events = kvm_vcpu_events::default();
+
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_VCPU_EVENTS(), &vcpu_events) };
+        if ret == 0 {
+            Ok(vcpu_events)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_VCPU_EVENTS
+    pub fn set_vcpu_events(&self, vcpu_events: &kvm_vcpu_events) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_VCPU_EVENTS(), vcpu_events) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
     }
 
     /// Gets the VCPU registers using the `KVM_GET_REGS` ioctl.

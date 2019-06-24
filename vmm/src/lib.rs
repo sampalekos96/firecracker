@@ -370,6 +370,8 @@ impl KvmContext {
             return Err(Error::KvmApiVersion(kvm.get_api_version()));
         }
 
+        check_cap(&kvm, Cap::MpState)?;
+        check_cap(&kvm, Cap::VcpuEvents)?;
         check_cap(&kvm, Cap::Irqchip)?;
         check_cap(&kvm, Cap::Ioeventfd)?;
         check_cap(&kvm, Cap::Irqfd)?;
@@ -934,13 +936,14 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        //if unsafe { FROM_FILE } {
-        //    self.guest_memory = 
-        //        Some(GuestMemory::new_from_file(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
-        //} else {
+        if unsafe { FROM_FILE } {
+            self.guest_memory = 
+                Some(GuestMemory::new_from_file(&arch_mem_regions)
+                     .map_err(StartMicrovmError::GuestMemory)?);
+        } else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
-        //}
+        }
         self.vm
             .memory_init(
                 self.guest_memory
@@ -993,6 +996,7 @@ impl Vmm {
                 &self.legacy_device_manager.com_evt_1_3,
                 &self.legacy_device_manager.com_evt_2_4,
                 &self.legacy_device_manager.kbd_evt,
+                unsafe {FROM_FILE},
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
         #[cfg(target_arch = "x86_64")]
@@ -1038,9 +1042,9 @@ impl Vmm {
             let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
 
-            let from_file_ = unsafe { FROM_FILE };
+            let from_file = unsafe { FROM_FILE };
             #[cfg(target_arch = "x86_64")]
-            vcpu.configure(&self.vm_config, entry_addr, &self.vm, from_file_)
+            vcpu.configure(&self.vm_config, entry_addr, &self.vm, from_file)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
             vcpus.push(vcpu);
         }
@@ -1048,18 +1052,6 @@ impl Vmm {
     }
 
     fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> std::result::Result<(), StartMicrovmError> {
-        //self.guest_memory.clone().unwrap().mark_regions_nrnw()
-        //    .map_err(|e| StartMicrovmError::GuestMemory(e))?;
-        //unsafe {
-        //    register_signal_handler(libc::SIGSEGV,
-        //                            SignalHandler::Siginfo(Vmm::handle_sigsegv),
-        //                            true)
-        //        .map_err(|e| {
-        //            info!("register_signal_handler failed with error {}", e);
-        //            StartMicrovmError::VcpuSpawn(e)
-        //        })?;
-        //}
-
         // vm_config has a default value for vcpu_count.
         let vcpu_count = self
             .vm_config
@@ -1200,6 +1192,49 @@ impl Vmm {
         Ok(())
     }
 
+    fn restore_mmio_devices(&mut self) {
+        //manually replay writes to mmio device
+        let base = 0xd000_0000u64;
+        let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+        let mut data = [0u8; 4];
+        let zero = [0u8; 4];
+        
+        bus.write(base+0x70, &zero);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 3);
+        bus.write(base+0x70, &data);
+        
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x14, &data);
+        bus.write(base+0x14, &zero);
+
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x24, &data);
+        bus.write(base+0x20, &data);
+
+        bus.write(base+0x24, &zero);
+        LittleEndian::write_u32(data.as_mut(), 512);
+        bus.write(base+0x20, &data);
+
+        LittleEndian::write_u32(data.as_mut(), 11);
+        bus.write(base+0x70, &data);
+
+        bus.write(base+0x30, &zero);
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+        
+        LittleEndian::write_u32(data.as_mut(), 15);
+        bus.write(base+0x70, &data);
+
+        let reader = BufReader::new(std::fs::File::open("queues.json").unwrap());
+        let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
+        self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
+    }
+
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
         if self.is_instance_initialized() {
@@ -1232,18 +1267,21 @@ impl Vmm {
         self.attach_legacy_devices()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        let entry_addr = self
-            .load_kernel()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let mut entry_addr = GuestAddress(0);
+        if unsafe { !FROM_FILE } {
+            entry_addr = self
+                .load_kernel()
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-        info!("after load_kernel() #pages present in memory is {}", self.pfns.len());
+            self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+            info!("after load_kernel() #pages present in memory is {}", self.pfns.len());
 
-        self.configure_system()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+            self.configure_system()
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-        info!("after configure_system() #pages present in memory is {}", self.pfns.len());
+            self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
+            info!("after configure_system() #pages present in memory is {}", self.pfns.len());
+        }
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
@@ -1259,68 +1297,16 @@ impl Vmm {
         info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
 
         // load dumped memory
-        let from_file = unsafe { FROM_FILE };
-        if from_file {
-            //let start = now_cputime_us();
-            let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
-            let mut buf = Vec::new();
-            mem_dump.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf.len(), 128*1048576);
-            self.guest_memory.clone().unwrap().write_slice_at_addr(buf.as_slice(), GuestAddress(0)).ok();
-            //let mut buf = vec![0u8; 32 * 1048576];
-            //mem_dump.read_exact(buf.as_mut_slice()).ok();
-            //println!("loading memory took {}us", now_cputime_us()-start);
-            //manually replay writes to mmio device
-            let base = 0xd000_0000u64;
-            let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
-            let mut data = [0u8; 4];
-            let zero = [0u8; 4];
-            
-            bus.write(base+0x70, &zero);
-            LittleEndian::write_u32(data.as_mut(), 1);
-            bus.write(base+0x70, &data);
-            LittleEndian::write_u32(data.as_mut(), 3);
-            bus.write(base+0x70, &data);
-            
-            LittleEndian::write_u32(data.as_mut(), 1);
-            bus.write(base+0x14, &data);
-            bus.write(base+0x14, &zero);
-
-            LittleEndian::write_u32(data.as_mut(), 1);
-            bus.write(base+0x24, &data);
-            bus.write(base+0x20, &data);
-
-            bus.write(base+0x24, &zero);
-            LittleEndian::write_u32(data.as_mut(), 512);
-            bus.write(base+0x20, &data);
-
-            LittleEndian::write_u32(data.as_mut(), 11);
-            bus.write(base+0x70, &data);
-
-            bus.write(base+0x30, &zero);
-            LittleEndian::write_u32(data.as_mut(), 256);
-            bus.write(base+0x38, &data);
-            
-            //LittleEndian::write_u32(data.as_mut(), 121372672);
-            //bus.write(base+0x80, &data);
-            //bus.write(base+0x84, &zero);
-            //LittleEndian::write_u32(data.as_mut(), 121376768);
-            //bus.write(base+0x90, &data);
-            //bus.write(base+0x94, &zero);
-            //LittleEndian::write_u32(data.as_mut(), 121380864);
-            //bus.write(base+0xa0, &data);
-            //bus.write(base+0xa4, &zero);
-
-            LittleEndian::write_u32(data.as_mut(), 1);
-            bus.write(base+0x44, &data);
-            
-            LittleEndian::write_u32(data.as_mut(), 15);
-            bus.write(base+0x70, &data);
-
-            let reader = BufReader::new(std::fs::File::open("queues.json").unwrap());
-            let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
-            self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
-        }
+        //if unsafe { FROM_FILE } {
+        //    let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
+        //    let mut buf = Vec::new();
+        //    mem_dump.read_to_end(&mut buf).unwrap();
+        //    assert_eq!(buf.len(), 128*1048576);
+        //    self.guest_memory.clone().unwrap().write_slice_at_addr(buf.as_slice(), GuestAddress(0)).ok();
+        //    //let mut buf = vec![0u8; 32 * 1048576];
+        //    //mem_dump.read_exact(buf.as_mut_slice()).ok();
+        //    //println!("loading memory took {}us", now_cputime_us()-start);
+        //}
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;

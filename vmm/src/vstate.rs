@@ -19,8 +19,9 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_irqfd, kvm_ioeventfd,
-    kvm_ioeventfd_flag_nr_datamatch, kvm_ioeventfd_flag_nr_deassign,
+use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_irqchip, kvm_lapic_state, kvm_mp_state, kvm_vcpu_events, kvm_fpu,
+    //kvm_irqfd, kvm_ioeventfd,
+    //kvm_ioeventfd_flag_nr_datamatch, kvm_ioeventfd_flag_nr_deassign,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -158,49 +159,22 @@ impl Vm {
         Ok(())
     }
 
-
-    // Yue
-    //pub fn memory_del(&mut self) -> Result<()> {
-    //    match self.guest_mem {
-    //        Some(ref mem) => {
-    //            mem.with_regions(|index, guest_addr, size, host_addr| {
-    //                info!("Removing guest memory starting at {:x?} with size {}", host_addr, size);
-
-    //                let mut memory_region = kvm_userspace_memory_region {
-    //                    slot: index as u32,
-    //                    guest_phys_addr: guest_addr.offset() as u64,
-    //                    memory_size: 0u64,
-    //                    userspace_addr: host_addr as u64,
-    //                    flags: 0u32,
-    //                };
-    //                self.fd.set_user_memory_region(memory_region)?;
-
-    //                memory_region = kvm_userspace_memory_region {
-    //                    slot: index as u32,
-    //                    guest_phys_addr: guest_addr.offset() as u64,
-    //                    memory_size: size as u64,
-    //                    userspace_addr: host_addr as u64,
-    //                    flags: 0x2u32,
-    //                };
-    //                self.fd.set_user_memory_region(memory_region)
-    //            })?;
-    //        },
-    //        None => {
-    //            info!("Guest Memory is empty");
-    //        }
-    //    }
-    //    Ok(())
-    //}
-
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
         &self,
         com_evt_1_3: &EventFd,
         com_evt_2_4: &EventFd,
         kbd_evt: &EventFd,
+        from_file: bool,
     ) -> Result<()> {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
-
+        if from_file {
+            //let irqchip: kvm_irqchip = 
+            //    serde_json::from_reader(
+            //        BufReader::new(std::fs::File::open("irqchip.json").unwrap())
+            //    ).unwrap();
+            //self.fd.set_irqchip(&irqchip).map_err(Error::Irq)?;
+        }
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
         self.fd.register_irqfd(com_evt_2_4, 3).map_err(Error::Irq)?;
         self.fd.register_irqfd(kbd_evt, 1).map_err(Error::Irq)?;
@@ -284,7 +258,7 @@ impl Vcpu {
         })
     }
 
-    fn setup_regs_sregs_from_file(&self) {
+    fn setup_regs_from_file(&self) {
         let reader = BufReader::new(std::fs::File::open("kvm_msrs.json").unwrap());
         let msrs: kvm_msrs = serde_json::from_reader(reader).unwrap();
         self.fd.set_msrs(&msrs).ok();
@@ -293,9 +267,50 @@ impl Vcpu {
         let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
         self.fd.set_regs(&regs).ok();
 
+        let reader = BufReader::new(std::fs::File::open("kvm_fpu.json").unwrap());
+        let fpu: kvm_fpu = serde_json::from_reader(reader).unwrap();
+        self.fd.set_fpu(&fpu).ok();
+
         let reader = BufReader::new(std::fs::File::open("kvm_sregs.json").unwrap());
         let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
         self.fd.set_sregs(&sregs).ok();
+
+        let reader = BufReader::new(std::fs::File::open("kvm_vcpus_events.json").unwrap());
+        let vcpu_events: kvm_vcpu_events = serde_json::from_reader(reader).unwrap();
+        self.fd.set_vcpu_events(&vcpu_events).ok();
+
+        let reader = BufReader::new(std::fs::File::open("kvm_mp_state.json").unwrap());
+        let mp_state: kvm_mp_state = serde_json::from_reader(reader).unwrap();
+        self.fd.set_mp_state(&mp_state).ok();
+
+        let reader = BufReader::new(std::fs::File::open("kvm_lapic.json").unwrap());
+        let regs_vec: Vec<std::os::raw::c_char> = serde_json::from_reader(reader).unwrap();
+        let mut regs = [0 as std::os::raw::c_char; 1024usize];
+        for (idx, _) in regs_vec.iter().enumerate() {
+            regs[idx] = regs_vec[idx];
+        }
+        let lapic = kvm_lapic_state { regs };
+        self.fd.set_lapic(&lapic).ok();
+    }
+
+    fn write_regs_to_file(&self) {
+        let vcpu_events = self.fd.get_vcpu_events().unwrap();
+        std::fs::write("kvm_vcpu_events.json", serde_json::to_string(&vcpu_events).unwrap()).ok();
+
+        let mp_state = self.fd.get_mp_state().unwrap();
+        std::fs::write("kvm_mp_state.json", serde_json::to_string(&mp_state).unwrap()).ok();
+
+        let regs = self.fd.get_regs().unwrap();
+        std::fs::write("kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
+
+        let fpu = self.fd.get_fpu().unwrap();
+        std::fs::write("kvm_fpu.json", serde_json::to_string(&fpu).unwrap()).ok();
+
+        let sregs = self.fd.get_sregs().unwrap();
+        std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
+
+        let lapic = self.fd.get_lapic().unwrap();
+        std::fs::write("kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -342,28 +357,17 @@ impl Vcpu {
             .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
         if from_file {
             let start = now_cputime_us();
-            self.setup_regs_sregs_from_file();
+            self.setup_regs_from_file();
             println!("loading registers took {}us", now_cputime_us()-start);
         } else {
             arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.offset() as u64)
                 .map_err(Error::REGSConfiguration)?;
             arch::x86_64::regs::setup_sregs(vm_memory, &self.fd).map_err(Error::SREGSConfiguration)?;
+            arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
+            arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
         }
         arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
-        arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
         Ok(())
-    }
-
-    fn write_regs_sregs_to_file(&self) {
-        let mut msrs: kvm_msrs = Default::default();
-        self.fd.get_msrs(&mut msrs).ok();
-        std::fs::write("kvm_msrs.json", serde_json::to_string(&msrs).unwrap()).ok();
-
-        let regs = self.fd.get_regs().unwrap();
-        std::fs::write("kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
-
-        let sregs = self.fd.get_sregs().unwrap();
-        std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
     }
 
     fn _set_himem_readonly(&self) -> Result<()> {
@@ -615,56 +619,56 @@ impl Vcpu {
                             info!("Runtime is up. #pages in memory is {}", pagemap.len());
                             println!("Runtime is up. #pages in memory is {}", pagemap.len());
                             if unsafe{ super::DUMP } {
+                                self.write_regs_to_file();
                                 let mut mem_dump = std::fs::OpenOptions::new()
                                     .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
                                 mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
-                                self.write_regs_sregs_to_file();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
                             }
-                            unsafe {
-                                //let addr = 0xd000_0000 + u64::from(devices::virtio::NOTIFY_REG_OFFSET);
-                                //let mut flags = 1 << kvm_ioeventfd_flag_nr_deassign
-                                //    | 1 << kvm_ioeventfd_flag_nr_datamatch;
-                                //let mut ioeventfd = kvm_ioeventfd {
-                                //    datamatch: 0u32.into(),
-                                //    len: std::mem::size_of::<u32>() as u32,
-                                //    addr,
-                                //    fd: super::QUEUE_EVT,
-                                //    flags,
-                                //    ..Default::default()
-                                //};
-                                //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
-                                //    error!("Failed to deassign ioeventfd: {:?}", std::io::Error::last_os_error());
-                                //    return Err(Error::VcpuUnhandledKvmExit)
-                                //}
-                                if libc::close(super::QUEUE_EVT) < 0 {
-                                    error!("Failed to close kvm's ioeventfd {}: {:?}",
-                                           super::QUEUE_EVT,
-                                           std::io::Error::last_os_error());
-                                    return Err(Error::VcpuUnhandledKvmExit)
-                                }
-                                println!("closed fd {}", super::QUEUE_EVT);
-                                let fd = libc::eventfd(0, libc::EFD_NONBLOCK);
-                                if fd < 0 {
-                                    error!("Failed to create new eventfd: {:?}", std::io::Error::last_os_error());
-                                    return Err(Error::VcpuUnhandledKvmExit)
-                                }
-                                //flags = 1 << kvm_ioeventfd_flag_nr_datamatch;
-                                //ioeventfd = kvm_ioeventfd {
-                                //    datamatch: 0u32.into(),
-                                //    len: std::mem::size_of::<u32>() as u32,
-                                //    addr,
-                                //    fd,
-                                //    flags,
-                                //    ..Default::default()
-                                //};
-                                //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
-                                //    error!("Failed to register ioeventfd: {}", std::io::Error::last_os_error());
-                                //    return Err(Error::VcpuUnhandledKvmExit)
-                                //}
-                                devices::virtio::block::QUEUE_EVT = fd;
-                                println!("registered new fd {}", fd);
-                            }
+                            //unsafe {
+                            //    //let addr = 0xd000_0000 + u64::from(devices::virtio::NOTIFY_REG_OFFSET);
+                            //    //let mut flags = 1 << kvm_ioeventfd_flag_nr_deassign
+                            //    //    | 1 << kvm_ioeventfd_flag_nr_datamatch;
+                            //    //let mut ioeventfd = kvm_ioeventfd {
+                            //    //    datamatch: 0u32.into(),
+                            //    //    len: std::mem::size_of::<u32>() as u32,
+                            //    //    addr,
+                            //    //    fd: super::QUEUE_EVT,
+                            //    //    flags,
+                            //    //    ..Default::default()
+                            //    //};
+                            //    //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
+                            //    //    error!("Failed to deassign ioeventfd: {:?}", std::io::Error::last_os_error());
+                            //    //    return Err(Error::VcpuUnhandledKvmExit)
+                            //    //}
+                            //    if libc::close(super::QUEUE_EVT) < 0 {
+                            //        error!("Failed to close kvm's ioeventfd {}: {:?}",
+                            //               super::QUEUE_EVT,
+                            //               std::io::Error::last_os_error());
+                            //        return Err(Error::VcpuUnhandledKvmExit)
+                            //    }
+                            //    println!("closed fd {}", super::QUEUE_EVT);
+                            //    let fd = libc::eventfd(0, libc::EFD_NONBLOCK);
+                            //    if fd < 0 {
+                            //        error!("Failed to create new eventfd: {:?}", std::io::Error::last_os_error());
+                            //        return Err(Error::VcpuUnhandledKvmExit)
+                            //    }
+                            //    //flags = 1 << kvm_ioeventfd_flag_nr_datamatch;
+                            //    //ioeventfd = kvm_ioeventfd {
+                            //    //    datamatch: 0u32.into(),
+                            //    //    len: std::mem::size_of::<u32>() as u32,
+                            //    //    addr,
+                            //    //    fd,
+                            //    //    flags,
+                            //    //    ..Default::default()
+                            //    //};
+                            //    //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
+                            //    //    error!("Failed to register ioeventfd: {}", std::io::Error::last_os_error());
+                            //    //    return Err(Error::VcpuUnhandledKvmExit)
+                            //    //}
+                            //    devices::virtio::block::QUEUE_EVT = fd;
+                            //    println!("registered new fd {}", fd);
+                            //}
                             //unsafe {
                             //    if libc::close(super::INTERRUPT_EVT) < 0
                             //        || libc::close(devices::virtio::block::INTERRUPT_EVT) < 0 {
