@@ -19,7 +19,8 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_irqchip, kvm_lapic_state, kvm_mp_state, kvm_vcpu_events, kvm_fpu,
+use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
+    kvm_mp_state, kvm_vcpu_events, kvm_fpu,
     //kvm_irqfd, kvm_ioeventfd,
     //kvm_ioeventfd_flag_nr_datamatch, kvm_ioeventfd_flag_nr_deassign,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
@@ -169,7 +170,7 @@ impl Vm {
     ) -> Result<()> {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         if from_file {
-            //let irqchip: kvm_irqchip = 
+            //let irqchip: kvm_irqchip =
             //    serde_json::from_reader(
             //        BufReader::new(std::fs::File::open("irqchip.json").unwrap())
             //    ).unwrap();
@@ -258,11 +259,49 @@ impl Vcpu {
         })
     }
 
-    fn setup_regs_from_file(&self) {
-        let reader = BufReader::new(std::fs::File::open("kvm_msrs.json").unwrap());
-        let msrs: kvm_msrs = serde_json::from_reader(reader).unwrap();
-        self.fd.set_msrs(&msrs).ok();
+    fn write_msrs_to_file(&self) {
+        let entry_vec = arch::x86_64::regs::create_msr_entries();
+        let vec_size_bytes =
+            std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
+        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
+        #[allow(clippy::cast_ptr_alignment)]
+        let msrs: &mut kvm_msrs = unsafe {
+            &mut *(vec.as_ptr() as *mut kvm_msrs)
+        };
 
+        unsafe {
+            let entries: &mut [kvm_msr_entry] = msrs.entries.as_mut_slice(entry_vec.len());
+            entries.copy_from_slice(&entry_vec);
+        }
+        msrs.nmsrs = entry_vec.len() as u32;
+        self.fd.get_msrs(msrs).ok();
+
+        unsafe {
+            let entries: Vec<kvm_msr_entry> = msrs.entries.as_slice(entry_vec.len()).to_vec();
+            std::fs::write("kvm_msrs.json", serde_json::to_string(&entries).unwrap()).ok();
+        }
+    }
+
+    fn setup_msrs_from_file(&self) {
+        let reader = BufReader::new(std::fs::File::open("kvm_msrs.json").unwrap());
+        let entries: Vec<kvm_msr_entry> = serde_json::from_reader(reader).unwrap();
+
+        let vec_size_bytes =
+            std::mem::size_of::<kvm_msrs>() + (entries.len() * std::mem::size_of::<kvm_msr_entry>());
+        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
+        #[allow(clippy::cast_ptr_alignment)]
+        let msrs: &mut kvm_msrs = unsafe {
+            &mut *(vec.as_ptr() as *mut kvm_msrs)
+        };
+
+        unsafe {
+            msrs.entries.as_mut_slice(entries.len()).copy_from_slice(&entries);
+        }
+        msrs.nmsrs = entries.len() as u32;
+        self.fd.set_msrs(msrs).ok();
+    }
+
+    fn setup_regs_from_file(&self) {
         let reader = BufReader::new(std::fs::File::open("kvm_regs.json").unwrap());
         let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
         self.fd.set_regs(&regs).ok();
@@ -275,7 +314,9 @@ impl Vcpu {
         let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
         self.fd.set_sregs(&sregs).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_vcpus_events.json").unwrap());
+        self.setup_msrs_from_file();
+
+        let reader = BufReader::new(std::fs::File::open("kvm_vcpu_events.json").unwrap());
         let vcpu_events: kvm_vcpu_events = serde_json::from_reader(reader).unwrap();
         self.fd.set_vcpu_events(&vcpu_events).ok();
 
@@ -308,6 +349,8 @@ impl Vcpu {
 
         let sregs = self.fd.get_sregs().unwrap();
         std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
+
+        self.write_msrs_to_file();
 
         let lapic = self.fd.get_lapic().unwrap();
         std::fs::write("kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
@@ -350,23 +393,22 @@ impl Vcpu {
             .set_cpuid2(&self.cpuid)
             .map_err(Error::SetSupportedCpusFailed)?;
 
-        arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
-        // Safe to unwrap because this method is called after the VM is configured
-        let vm_memory = vm
-            .get_memory()
-            .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
         if from_file {
             let start = now_cputime_us();
             self.setup_regs_from_file();
             println!("loading registers took {}us", now_cputime_us()-start);
         } else {
+            arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
+            // Safe to unwrap because this method is called after the VM is configured
+            let vm_memory = vm
+                .get_memory()
+                .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
             arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.offset() as u64)
                 .map_err(Error::REGSConfiguration)?;
             arch::x86_64::regs::setup_sregs(vm_memory, &self.fd).map_err(Error::SREGSConfiguration)?;
             arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
             arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
         }
-        arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
         Ok(())
     }
 
@@ -547,8 +589,9 @@ impl Vcpu {
         let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
 
         let ret = Vcpu::read_accessed_log(&pagemap, &sorted_pfns);
-        Vcpu::clear_accessed_log(&sorted_pfns);
-
+        if sorted_pfns.len() > 0 {
+            Vcpu::clear_accessed_log(&sorted_pfns);
+        }
         ret
     }
 
@@ -624,6 +667,8 @@ impl Vcpu {
                                     .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
                                 mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
+                                unsafe { libc::sleep(30) };
+                                return Err(Error::VcpuUnhandledKvmExit);
                             }
                             //unsafe {
                             //    //let addr = 0xd000_0000 + u64::from(devices::virtio::NOTIFY_REG_OFFSET);
@@ -859,7 +904,9 @@ impl Vcpu {
         std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("pages.log").ok();
         let pagemap = self.guest_mem.get_pagemap();
         let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
-        Vcpu::clear_accessed_log(&sorted_pfns);
+        if sorted_pfns.len() > 0 {
+            Vcpu::clear_accessed_log(&sorted_pfns);
+        }
         let mut accessed = Vec::new();
         let mut dirtied = Vec::new();
         let mut read = Vec::new();

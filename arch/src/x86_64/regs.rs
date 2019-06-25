@@ -224,7 +224,7 @@ fn setup_page_tables(mem: &GuestMemory, sregs: &mut kvm_sregs) -> Result<()> {
     Ok(())
 }
 
-fn create_msr_entries() -> Vec<kvm_msr_entry> {
+pub fn create_msr_entries() -> Vec<kvm_msr_entry> {
     let mut entries = Vec::<kvm_msr_entry>::new();
 
     entries.push(kvm_msr_entry {

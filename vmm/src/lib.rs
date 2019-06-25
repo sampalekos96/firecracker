@@ -937,7 +937,7 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if unsafe { FROM_FILE } {
-            self.guest_memory = 
+            self.guest_memory =
                 Some(GuestMemory::new_from_file(&arch_mem_regions)
                      .map_err(StartMicrovmError::GuestMemory)?);
         } else {
@@ -1194,17 +1194,22 @@ impl Vmm {
 
     fn restore_mmio_devices(&mut self) {
         //manually replay writes to mmio device
-        let base = 0xd000_0000u64;
+        let base = 0xd000_0000u64; // this is the mmio base addr of rootfs
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
         let mut data = [0u8; 4];
         let zero = [0u8; 4];
-        
+
+        // 0x70: update_driver_status
+        // 0x14: features_select
+        // 0x20: ack_features
+        // 0x24: acked_features_select
+        // 0x30: queue_select
         bus.write(base+0x70, &zero);
         LittleEndian::write_u32(data.as_mut(), 1);
         bus.write(base+0x70, &data);
         LittleEndian::write_u32(data.as_mut(), 3);
         bus.write(base+0x70, &data);
-        
+
         LittleEndian::write_u32(data.as_mut(), 1);
         bus.write(base+0x14, &data);
         bus.write(base+0x14, &zero);
@@ -1221,12 +1226,19 @@ impl Vmm {
         bus.write(base+0x70, &data);
 
         bus.write(base+0x30, &zero);
+
+        // states checked by device activation operation
+        // queue size and queue ready
         LittleEndian::write_u32(data.as_mut(), 256);
         bus.write(base+0x38, &data);
-        
         LittleEndian::write_u32(data.as_mut(), 1);
         bus.write(base+0x44, &data);
-        
+        // at this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // activation requires all queues in a valid state:
+        //     1. must be marked as ready
+        //     2. size must not be zero and cannot exceed max_size
+        //     3. descriptor table/available ring/used ring must completely reside in guest memory
+        //     4. alignment constraints must be satisfied
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
 
@@ -1281,6 +1293,8 @@ impl Vmm {
 
             self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
             info!("after configure_system() #pages present in memory is {}", self.pfns.len());
+        } else {
+            self.restore_mmio_devices();
         }
 
         self.register_events()
@@ -1393,7 +1407,7 @@ impl Vmm {
         let mut events = vec![epoll::Event::new(epoll::Events::empty(), 0); EPOLL_EVENTS_LEN];
 
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
-
+        let mut exit = false;
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
@@ -1410,12 +1424,12 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-                            if unsafe { DUMP } {
-                                let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
-                                std::fs::write("queues.json",
-                                                serde_json::to_string(&queues).unwrap()).ok();
+                            if unsafe { !DUMP } {
+                                self.stop(i32::from(FC_EXIT_CODE_OK));
+                            } else {
+                                println!("about to exit");
+                                exit = true;
                             }
-                            self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
                         EpollDispatch::Stdin => {
                             let mut out = [0u8; 64];
@@ -1444,6 +1458,9 @@ impl Vmm {
                             }
                         }
                         EpollDispatch::DeviceHandler(device_idx, device_token) => {
+                            if unsafe { DUMP } {
+                                println!("processing io to mmio device");
+                            }
                             METRICS.vmm.device_events.inc();
                             match self.epoll_context.get_device_handler(device_idx) {
                                 Ok(handler) => {
@@ -1482,6 +1499,12 @@ impl Vmm {
                         }
                     }
                 }
+            }
+            if exit {
+                let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
+                std::fs::write("queues.json",
+                                serde_json::to_string(&queues).unwrap()).ok();
+                self.stop(i32::from(FC_EXIT_CODE_OK));
             }
         }
     }
