@@ -57,8 +57,9 @@ impl MemoryRegion {
         buf
     }
 
-    pub fn load(&self, buf: &[u8]) {
-        self.mapping.write_slice(buf, 0).ok();
+    /// load content provided in `buf` into guest memory
+    pub fn load(&self, buf: &[u8]) -> usize {
+        self.mapping.write_slice(buf, 0).unwrap()
     }
 }
 
@@ -256,7 +257,8 @@ impl GuestMemory {
     pub fn load_regions(&self, buf: &Vec<u8>) {
         let mut pos = 0usize;
         for region in self.regions.iter() {
-            region.load(&buf[pos..pos+region.size()]);
+            let bytes_written = region.load(&buf[pos..pos+region.size()]);
+            assert_eq!(bytes_written, region.size());
             pos += region.size();
         }
         assert_eq!(pos, buf.len());

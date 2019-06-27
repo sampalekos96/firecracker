@@ -636,6 +636,14 @@ struct Vmm {
     pfns: BTreeMap<u64, usize>,
 }
 
+///// kvm_irqchip that is serde-compatible
+//#[derive(Serialize, Deserialize)]
+//pub struct Kvm_irqchip_serde {
+//    pub chip_id: __u32,
+//    pub pad: __u32,
+//    pub chip: [std::os::raw::c_char; 512usize],
+//}
+
 impl Vmm {
     fn new(
         api_shared_info: Arc<RwLock<InstanceInfo>>,
@@ -875,8 +883,7 @@ impl Vmm {
         for cfg in self.vsock_device_configs.iter() {
             let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
 
-            let vsock_box = Box::new(
-                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+            let vsock_box = Box::new( devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -936,14 +943,14 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        if unsafe { FROM_FILE } {
-            self.guest_memory =
-                Some(GuestMemory::new_from_file(&arch_mem_regions)
-                     .map_err(StartMicrovmError::GuestMemory)?);
-        } else {
+        //if unsafe { FROM_FILE } {
+        //    self.guest_memory =
+        //        Some(GuestMemory::new_from_file(&arch_mem_regions)
+        //             .map_err(StartMicrovmError::GuestMemory)?);
+        //} else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
-        }
+        //}
         self.vm
             .memory_init(
                 self.guest_memory
@@ -1295,13 +1302,14 @@ impl Vmm {
             info!("after configure_system() #pages present in memory is {}", self.pfns.len());
         } else {
             self.restore_mmio_devices();
+            let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
+            let mut buf = Vec::new();
+            mem_dump.read_to_end(&mut buf).unwrap();
+            self.guest_memory.clone().unwrap().load_regions(&buf);
         }
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-
-        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-        info!("after register_events() #pages present in memory is {}", self.pfns.len());
 
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
@@ -1309,18 +1317,6 @@ impl Vmm {
 
         self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
         info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
-
-        // load dumped memory
-        //if unsafe { FROM_FILE } {
-        //    let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
-        //    let mut buf = Vec::new();
-        //    mem_dump.read_to_end(&mut buf).unwrap();
-        //    assert_eq!(buf.len(), 128*1048576);
-        //    self.guest_memory.clone().unwrap().write_slice_at_addr(buf.as_slice(), GuestAddress(0)).ok();
-        //    //let mut buf = vec![0u8; 32 * 1048576];
-        //    //mem_dump.read_exact(buf.as_mut_slice()).ok();
-        //    //println!("loading memory took {}us", now_cputime_us()-start);
-        //}
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
