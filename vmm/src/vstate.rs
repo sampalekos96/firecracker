@@ -312,7 +312,7 @@ pub struct Vcpu {
     create_ts: TimestampUs,
     guest_mem: GuestMemory,
     _vmfd: VmFd,
-    _mmio_cnt: usize,
+    magic_124_cnt: usize,
     magic_port_cnt: usize,
 }
 
@@ -346,7 +346,7 @@ impl Vcpu {
             create_ts,
             guest_mem: guest_mem.clone(),
             _vmfd: vm.fd.clone(),
-            _mmio_cnt: 0usize,
+            magic_124_cnt: 0usize,
             magic_port_cnt: 0usize,
         })
     }
@@ -731,6 +731,15 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::IoOut(addr, data) => {
+                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 124 {
+                        self.magic_124_cnt += 1;
+                        match self.magic_124_cnt {
+                            1 => println!("loading json file done"),
+                            2 => println!("calculation file done"),
+                            3 => println!("outputing result done"),
+                            _ => println!("unknown event")
+                        }
+                    }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
