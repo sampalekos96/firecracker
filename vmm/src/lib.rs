@@ -1454,9 +1454,6 @@ impl Vmm {
                             }
                         }
                         EpollDispatch::DeviceHandler(device_idx, device_token) => {
-                            if unsafe { DUMP } {
-                                println!("processing io to mmio device");
-                            }
                             METRICS.vmm.device_events.inc();
                             match self.epoll_context.get_device_handler(device_idx) {
                                 Ok(handler) => {
@@ -1473,6 +1470,9 @@ impl Vmm {
                                         }
                                         _ => (),
                                     }
+                                    //if unsafe { DUMP } {
+                                    //    println!("io to mmio device done");
+                                    //}
                                 }
                                 Err(e) => {
                                     warn!("invalid handler for device {}: {:?}", device_idx, e)

@@ -21,6 +21,8 @@ use default_syscalls;
 use kvm::*;
 use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
     kvm_mp_state, kvm_vcpu_events, kvm_fpu,
+    KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
+    kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
     //kvm_irqfd, kvm_ioeventfd,
     //kvm_ioeventfd_flag_nr_datamatch, kvm_ioeventfd_flag_nr_deassign,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
@@ -93,6 +95,86 @@ impl ::std::convert::From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         Error::SetUserMemoryRegion(e)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct IoapicState {
+   pub base_address: u64,
+   pub ioregsel: u32,
+   pub id: u32,
+   pub irr: u32,
+   pub pad: u32,
+   pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
+}
+    
+fn get_ioapic_state(vmfd: &VmFd) -> IoapicState {
+    let mut irqchip = kvm_irqchip {
+        chip_id: KVM_IRQCHIP_IOAPIC,
+        ..Default::default()
+    };
+    vmfd.get_irqchip(&mut irqchip).ok();
+    let kioapic = unsafe { irqchip.chip.ioapic };
+    let mut ioapic = IoapicState {
+        base_address: kioapic.base_address,
+        ioregsel: kioapic.ioregsel,
+        id: kioapic.id,
+        irr: kioapic.irr,
+        pad: kioapic.pad,
+        redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1::default(); 24usize],
+    };
+    unsafe {
+        for i in 0..24 {
+            ioapic.redirtbl[i] = kioapic.redirtbl[i].fields;
+        }
+    };
+    ioapic
+}
+
+fn get_pic_state(vmfd: &VmFd, master: bool) -> kvm_pic_state {
+    let mut irqchip = kvm_irqchip {
+        chip_id: if master { KVM_IRQCHIP_PIC_MASTER } else { KVM_IRQCHIP_PIC_SLAVE },
+        ..Default::default()
+    };
+    vmfd.get_irqchip(&mut irqchip).ok();
+    unsafe { irqchip.chip.pic }
+}
+
+fn setup_irqchip_from_file(vmfd: &VmFd) {
+    let reader = BufReader::new(std::fs::File::open("ioapic.json").unwrap());
+    let ioapic: IoapicState = serde_json::from_reader(reader).unwrap();
+    let mut irqchip = kvm_irqchip {
+        chip_id: KVM_IRQCHIP_IOAPIC,
+        ..Default::default() 
+    };
+    unsafe {
+        irqchip.chip.ioapic.base_address = ioapic.base_address;
+        irqchip.chip.ioapic.ioregsel = ioapic.ioregsel;
+        irqchip.chip.ioapic.id = ioapic.id;
+        irqchip.chip.ioapic.irr = ioapic.irr;
+        irqchip.chip.ioapic.pad = ioapic.pad;
+        for i in 0..24 {
+            irqchip.chip.ioapic.redirtbl[i].fields = ioapic.redirtbl[i];
+        }
+    }
+    vmfd.set_irqchip(&irqchip).ok();
+
+    let reader = BufReader::new(std::fs::File::open("pic_master.json").unwrap());
+    let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
+    irqchip = kvm_irqchip {
+        chip_id: KVM_IRQCHIP_PIC_MASTER,
+        ..Default::default()
+    };
+    irqchip.chip.pic = pic;
+    vmfd.set_irqchip(&irqchip).ok();
+
+    let reader = BufReader::new(std::fs::File::open("pic_slave.json").unwrap());
+    let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
+    irqchip = kvm_irqchip {
+        chip_id: KVM_IRQCHIP_PIC_SLAVE,
+        ..Default::default()
+    };
+    irqchip.chip.pic = pic;
+    vmfd.set_irqchip(&irqchip).ok();
 }
 
 /// A wrapper around creating and using a VM.
@@ -170,15 +252,25 @@ impl Vm {
     ) -> Result<()> {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         if from_file {
-            //let irqchip: kvm_irqchip =
-            //    serde_json::from_reader(
-            //        BufReader::new(std::fs::File::open("irqchip.json").unwrap())
-            //    ).unwrap();
-            //self.fd.set_irqchip(&irqchip).map_err(Error::Irq)?;
+            setup_irqchip_from_file(&self.fd);
         }
+        //let ioapic = get_ioapic_state(&self.fd);
+        //std::fs::write("ioapic_before_register_irqfd.json", serde_json::to_string(&ioapic).unwrap()).ok();
+        //let pic = get_pic_state(&self.fd, true);
+        //std::fs::write("pic_master_before_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
+        //let pic = get_pic_state(&self.fd, false);
+        //std::fs::write("pic_slave_before_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
+
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
         self.fd.register_irqfd(com_evt_2_4, 3).map_err(Error::Irq)?;
         self.fd.register_irqfd(kbd_evt, 1).map_err(Error::Irq)?;
+
+        //let ioapic = get_ioapic_state(&self.fd);
+        //std::fs::write("ioapic_after_register_irqfd.json", serde_json::to_string(&ioapic).unwrap()).ok();
+        //let pic = get_pic_state(&self.fd, true);
+        //std::fs::write("pic_master_after_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
+        //let pic = get_pic_state(&self.fd, false);
+        //std::fs::write("pic_slave_after_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
 
         Ok(())
     }
@@ -354,6 +446,15 @@ impl Vcpu {
 
         let lapic = self.fd.get_lapic().unwrap();
         std::fs::write("kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
+    }
+
+    fn write_irqchip_to_file(&self) {
+        let ioapic = get_ioapic_state(&self._vmfd);
+        std::fs::write("ioapic.json", serde_json::to_string(&ioapic).unwrap()).ok();
+        let pic = get_pic_state(&self._vmfd, true);
+        std::fs::write("pic_master.json", serde_json::to_string(&pic).unwrap()).ok();
+        let pic = get_pic_state(&self._vmfd, false);
+        std::fs::write("pic_slave.json", serde_json::to_string(&pic).unwrap()).ok();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -662,13 +763,19 @@ impl Vcpu {
                             info!("Runtime is up. #pages in memory is {}", pagemap.len());
                             println!("Runtime is up. #pages in memory is {}", pagemap.len());
                             if unsafe{ super::DUMP } {
+                                unsafe { libc::sleep(30) };
+                                println!("dumping states");
                                 self.write_regs_to_file();
+                                self.write_irqchip_to_file();
                                 let mut mem_dump = std::fs::OpenOptions::new()
                                     .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
                                 mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
-                                unsafe { libc::sleep(30) };
                                 return Err(Error::VcpuUnhandledKvmExit);
+                            } else {
+                                let regs = self.fd.get_regs().unwrap();
+                                std::fs::write("kvm_regs_regular_run.json",
+                                               serde_json::to_string(&regs).unwrap()).ok();
                             }
                             //unsafe {
                             //    //let addr = 0xd000_0000 + u64::from(devices::virtio::NOTIFY_REG_OFFSET);
@@ -910,6 +1017,12 @@ impl Vcpu {
         let mut accessed = Vec::new();
         let mut dirtied = Vec::new();
         let mut read = Vec::new();
+        //let ioapic = get_ioapic_state(&self._vmfd);
+        //std::fs::write("ioapic_initial.json", serde_json::to_string(&ioapic).unwrap()).ok();
+        //let pic = get_pic_state(&self._vmfd, true);
+        //std::fs::write("pic_master_initial.json", serde_json::to_string(&pic).unwrap()).ok();
+        //let pic = get_pic_state(&self._vmfd, false);
+        //std::fs::write("pic_slave_initial.json", serde_json::to_string(&pic).unwrap()).ok();
         println!("entering kvm_run");
         loop {
             let ret = self.run_emulation(&mut accessed, &mut dirtied, &mut read);

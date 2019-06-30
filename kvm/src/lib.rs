@@ -360,12 +360,10 @@ impl VmFd {
         }
     }
     /// KVM_GET_IRQCHIP
-    pub fn get_irqchip(&self) -> Result<kvm_irqchip> {
-        let irqchip = kvm_irqchip::default();
-
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_IRQCHIP(), &irqchip) };
+    pub fn get_irqchip(&self, irqchip: &mut kvm_irqchip) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_IRQCHIP(), irqchip) };
         if ret == 0 {
-            Ok(irqchip)
+            Ok(())
         } else {
             Err(io::Error::last_os_error())
         }
