@@ -361,7 +361,7 @@ impl VmFd {
     }
     /// KVM_GET_IRQCHIP
     pub fn get_irqchip(&self, irqchip: &mut kvm_irqchip) -> Result<()> {
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_IRQCHIP(), irqchip) };
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_IRQCHIP(), irqchip) };
         if ret == 0 {
             Ok(())
         } else {
@@ -703,9 +703,9 @@ impl VcpuFd {
     }
     /// KVM_GET_XSAVE
     pub fn get_xsave(&self) -> Result<kvm_xsave> {
-        let xsave = kvm_xsave::default(); 
+        let mut xsave = kvm_xsave::default(); 
 
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XSAVE(), &xsave) };
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XSAVE(), &mut xsave) };
         if ret == 0 {
             Ok(xsave)
         } else {
@@ -713,7 +713,7 @@ impl VcpuFd {
         }
     }
     /// KVM_SET_XSAVE
-    pub fn set_xsave(&self, xsave: &mut kvm_xsave) -> Result<()> {
+    pub fn set_xsave(&self, xsave: &kvm_xsave) -> Result<()> {
         let ret = unsafe { ioctl_with_ref(self, KVM_SET_XSAVE(), xsave) };
         if ret == 0 {
             Ok(())
@@ -723,9 +723,9 @@ impl VcpuFd {
     }
     /// KVM_GET_XCRS
     pub fn get_xcrs(&self) -> Result<kvm_xcrs> {
-        let xcrs = kvm_xcrs::default(); 
+        let mut xcrs = kvm_xcrs::default(); 
 
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XCRS(), &xcrs) };
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_XCRS(), &mut xcrs) };
         if ret == 0 {
             Ok(xcrs)
         } else {
@@ -733,7 +733,7 @@ impl VcpuFd {
         }
     }
     /// KVM_SET_XCRS
-    pub fn set_xcrs(&self, xcrs: &mut kvm_xcrs) -> Result<()> {
+    pub fn set_xcrs(&self, xcrs: &kvm_xcrs) -> Result<()> {
         let ret = unsafe { ioctl_with_ref(self, KVM_SET_XCRS(), xcrs) };
         if ret == 0 {
             Ok(())
@@ -743,9 +743,9 @@ impl VcpuFd {
     }
     /// KVM_GET_MP_STATE
     pub fn get_mp_state(&self) -> Result<kvm_mp_state> {
-        let mp_state = kvm_mp_state::default();
+        let mut mp_state = kvm_mp_state::default();
 
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_MP_STATE(), &mp_state) };
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_MP_STATE(), &mut mp_state) };
         if ret == 0 {
             Ok(mp_state)
         } else {
@@ -763,9 +763,9 @@ impl VcpuFd {
     }
     /// KVM_GET_VCPU_EVENTS
     pub fn get_vcpu_events(&self) -> Result<kvm_vcpu_events> {
-        let vcpu_events = kvm_vcpu_events::default();
+        let mut vcpu_events = kvm_vcpu_events::default();
 
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_VCPU_EVENTS(), &vcpu_events) };
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_VCPU_EVENTS(), &mut vcpu_events) };
         if ret == 0 {
             Ok(vcpu_events)
         } else {

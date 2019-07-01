@@ -20,7 +20,7 @@ use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
 use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
-    kvm_mp_state, kvm_vcpu_events, kvm_fpu,
+    kvm_mp_state, kvm_vcpu_events, kvm_fpu, kvm_xsave, kvm_xcrs,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
     //kvm_irqfd, kvm_ioeventfd,
@@ -398,9 +398,21 @@ impl Vcpu {
         let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
         self.fd.set_regs(&regs).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_fpu.json").unwrap());
-        let fpu: kvm_fpu = serde_json::from_reader(reader).unwrap();
-        self.fd.set_fpu(&fpu).ok();
+        let reader = BufReader::new(std::fs::File::open("kvm_xsave.json").unwrap());
+        let region_vec: Vec<u32> = serde_json::from_reader(reader).unwrap();
+        let mut region = [0u32; 1024usize];
+        for idx in 0..region.len() {
+            region[idx] = region_vec[idx];
+        }
+        let xsave = kvm_xsave{ region };
+        self.fd.set_xsave(&xsave).ok();
+        //let reader = BufReader::new(std::fs::File::open("kvm_fpu.json").unwrap());
+        //let fpu: kvm_fpu = serde_json::from_reader(reader).unwrap();
+        //self.fd.set_fpu(&fpu).ok();
+        
+        let reader = BufReader::new(std::fs::File::open("kvm_xcrs.json").unwrap());
+        let xcrs: kvm_xcrs = serde_json::from_reader(reader).unwrap();
+        self.fd.set_xcrs(&xcrs).ok();
 
         let reader = BufReader::new(std::fs::File::open("kvm_sregs.json").unwrap());
         let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
@@ -436,8 +448,13 @@ impl Vcpu {
         let regs = self.fd.get_regs().unwrap();
         std::fs::write("kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
 
-        let fpu = self.fd.get_fpu().unwrap();
-        std::fs::write("kvm_fpu.json", serde_json::to_string(&fpu).unwrap()).ok();
+        let xsave = self.fd.get_xsave().unwrap();
+        std::fs::write("kvm_xsave.json", serde_json::to_string(&xsave.region.to_vec()).unwrap()).ok();
+        //let fpu = self.fd.get_fpu().unwrap();
+        //std::fs::write("kvm_fpu.json", serde_json::to_string(&fpu).unwrap()).ok();
+
+        let xcrs = self.fd.get_xcrs().unwrap();
+        std::fs::write("kvm_xcrs.json", serde_json::to_string(&xcrs).unwrap()).ok();
 
         let sregs = self.fd.get_sregs().unwrap();
         std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
