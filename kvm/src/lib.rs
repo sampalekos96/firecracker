@@ -701,6 +701,46 @@ impl VcpuFd {
         buf.as_mut_slice().write(slice).ok();
         ofile.write_all(buf.as_slice()).ok();
     }
+    /// KVM_GET_XSAVE
+    pub fn get_xsave(&self) -> Result<kvm_xsave> {
+        let xsave = kvm_xsave::default(); 
+
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XSAVE(), &xsave) };
+        if ret == 0 {
+            Ok(xsave)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_XSAVE
+    pub fn set_xsave(&self, xsave: &mut kvm_xsave) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_XSAVE(), xsave) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_GET_XCRS
+    pub fn get_xcrs(&self) -> Result<kvm_xcrs> {
+        let xcrs = kvm_xcrs::default(); 
+
+        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XCRS(), &xcrs) };
+        if ret == 0 {
+            Ok(xcrs)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_XCRS
+    pub fn set_xcrs(&self, xcrs: &mut kvm_xcrs) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_XCRS(), xcrs) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
     /// KVM_GET_MP_STATE
     pub fn get_mp_state(&self) -> Result<kvm_mp_state> {
         let mp_state = kvm_mp_state::default();
