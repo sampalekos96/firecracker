@@ -775,21 +775,23 @@ impl Vcpu {
 
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
-                            super::Vmm::log_boot_time(&self.create_ts);
-                            println!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
-                            // #pages present, #pages accessed, #pages dirtied, #pages only read
-                            // set guest memory to read only
-                            //info!("Setting guest memory to read-only");
-                            //self._set_himem_readonly()?;
-                            //info!("Set guest memory to read-only");
-                            //return Err(Error::VcpuDone);
+                            if unsafe { super::FROM_FILE } {
+                                println!("Import done.");
+                            } else {
+                                super::Vmm::log_boot_time(&self.create_ts);
+                                println!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
+                            }
                         } else if self.magic_port_cnt == 2 {
+                            if unsafe { super::FROM_FILE } {
+                                println!("App done. Shutting down...");
+                                return Err(Error::VcpuUnhandledKvmExit);
+                            }
                             info!("Init finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 3 {
                             info!("Runtime is up. #pages in memory is {}", pagemap.len());
                             println!("Runtime is up. #pages in memory is {}", pagemap.len());
                             if unsafe{ super::DUMP } {
-                                unsafe { libc::sleep(30) };
+                                //unsafe { libc::sleep(30) };
                                 println!("dumping states");
                                 self.write_regs_to_file();
                                 self.write_irqchip_to_file();
@@ -803,80 +805,6 @@ impl Vcpu {
                                 std::fs::write("kvm_regs_regular_run.json",
                                                serde_json::to_string(&regs).unwrap()).ok();
                             }
-                            //unsafe {
-                            //    //let addr = 0xd000_0000 + u64::from(devices::virtio::NOTIFY_REG_OFFSET);
-                            //    //let mut flags = 1 << kvm_ioeventfd_flag_nr_deassign
-                            //    //    | 1 << kvm_ioeventfd_flag_nr_datamatch;
-                            //    //let mut ioeventfd = kvm_ioeventfd {
-                            //    //    datamatch: 0u32.into(),
-                            //    //    len: std::mem::size_of::<u32>() as u32,
-                            //    //    addr,
-                            //    //    fd: super::QUEUE_EVT,
-                            //    //    flags,
-                            //    //    ..Default::default()
-                            //    //};
-                            //    //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
-                            //    //    error!("Failed to deassign ioeventfd: {:?}", std::io::Error::last_os_error());
-                            //    //    return Err(Error::VcpuUnhandledKvmExit)
-                            //    //}
-                            //    if libc::close(super::QUEUE_EVT) < 0 {
-                            //        error!("Failed to close kvm's ioeventfd {}: {:?}",
-                            //               super::QUEUE_EVT,
-                            //               std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    println!("closed fd {}", super::QUEUE_EVT);
-                            //    let fd = libc::eventfd(0, libc::EFD_NONBLOCK);
-                            //    if fd < 0 {
-                            //        error!("Failed to create new eventfd: {:?}", std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    //flags = 1 << kvm_ioeventfd_flag_nr_datamatch;
-                            //    //ioeventfd = kvm_ioeventfd {
-                            //    //    datamatch: 0u32.into(),
-                            //    //    len: std::mem::size_of::<u32>() as u32,
-                            //    //    addr,
-                            //    //    fd,
-                            //    //    flags,
-                            //    //    ..Default::default()
-                            //    //};
-                            //    //if sys_util::ioctl_with_ref(&self._vmfd, KVM_IOEVENTFD(), &ioeventfd) != 0 {
-                            //    //    error!("Failed to register ioeventfd: {}", std::io::Error::last_os_error());
-                            //    //    return Err(Error::VcpuUnhandledKvmExit)
-                            //    //}
-                            //    devices::virtio::block::QUEUE_EVT = fd;
-                            //    println!("registered new fd {}", fd);
-                            //}
-                            //unsafe {
-                            //    if libc::close(super::INTERRUPT_EVT) < 0
-                            //        || libc::close(devices::virtio::block::INTERRUPT_EVT) < 0 {
-                            //        error!("Failed to close old eventfd: {:?}", std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    println!("closed fd {:?} and {:?}", super::INTERRUPT_EVT,
-                            //             devices::virtio::block::INTERRUPT_EVT);
-                            //    let fd = libc::eventfd(0, libc::EFD_NONBLOCK);
-                            //    if fd < 0 {
-                            //        error!("Failed to create new eventfd: {:?}", std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    let irqfd = kvm_irqfd {
-                            //        fd: fd as u32,
-                            //        gsi: 5,
-                            //        ..Default::default()
-                            //    };
-                            //    if sys_util::ioctl_with_ref(&self._vmfd, KVM_IRQFD(), &irqfd) != 0 {
-                            //        error!("Failed to register irqfd: {:?}", std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    let fd2 = libc::dup(fd);
-                            //    if fd2 < 0 {
-                            //        error!("Failed to duplicate the eventfd: {:?}", std::io::Error::last_os_error());
-                            //        return Err(Error::VcpuUnhandledKvmExit)
-                            //    }
-                            //    devices::virtio::block::INTERRUPT_EVT = fd2;
-                            //    println!("registered new fd {} and duplicated it as fd {}", fd, fd2);
-                            //}
                         } else if self.magic_port_cnt == 4 {
                             info!("Imports finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 5 {
