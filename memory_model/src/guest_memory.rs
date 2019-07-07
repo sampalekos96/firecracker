@@ -61,6 +61,12 @@ impl MemoryRegion {
     pub fn load(&self, buf: &[u8]) -> usize {
         self.mapping.write_slice(buf, 0).unwrap()
     }
+
+    /// load the given page into this memory region. only used in load_init function so the given
+    /// page is guaranteed to be within the region.
+    pub fn load_page(&self, offset: usize, buf: &[u8]) {
+        self.mapping.write_slice(buf, offset).unwrap();
+    }
 }
 
 fn region_end(region: &MemoryRegion) -> GuestAddress {
@@ -204,6 +210,8 @@ impl GuestMemory {
         num & 0x7FFFFFFFFFFFFF
     }
 
+    /// return a mapping from host physical page numbers to guest physical page numbers
+    /// for the given virtual address range
     fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
     -> BTreeMap<u64, usize> {
         const PM_ENTRY_SIZE:u64 = 8;
@@ -227,7 +235,8 @@ impl GuestMemory {
         pfns
     }
 
-    /// return the PFNs of the memory pages of this GuestMemory
+    /// return a mapping from host physical page numbers to guest physical page numbers
+    /// for the entire guest memory
     pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
         let mut pfns = BTreeMap::new();
@@ -242,6 +251,43 @@ impl GuestMemory {
             page_i_base += region.mapping.size() / page_size as usize;
         }
         pfns
+    }
+
+    /// return a byte vector containing all initialized guest memory pages
+    /// Here being initialized means being present in physical RAM
+    /// the byte vector format is
+    /// guest physical frame (i.e. page) number (gpfn) in little endian (8 Bytes)
+    /// followed by the corresponding guest page (4096 Bytes)
+    pub fn dump_init(&self) -> Vec<u8> {
+        let mut dump = Vec::new();
+        for gpfn in self.get_pagemap().values() {
+            dump.append(&mut gpfn.to_le_bytes().to_vec());
+            let buf = &mut [0u8; 4096usize];
+            self.read_slice_at_addr(buf, GuestAddress(gpfn * 4096))
+                .map_err(|e| {
+                    println!("{:?}", e);
+                    e
+                });
+            dump.append(&mut buf.to_vec());
+        }
+        dump
+    }
+
+    /// load initialized memory from the given buffer
+    pub fn load_init(&self, buf: &Vec<u8>) {
+        let mut pos = 0usize;
+        while pos < buf.len() {
+            let gpfn_buf = &mut [0u8; 8usize];
+            gpfn_buf.copy_from_slice(&buf[pos..(pos + 8)]);
+            let gpfn = usize::from_le_bytes(*gpfn_buf);
+            pos += 8;
+            self.write_slice_at_addr(&buf[pos..(pos + 4096)], GuestAddress(gpfn * 4096))
+                .map_err(|e| {
+                    println!("{:?}", e);
+                    e
+                });
+            pos += 4096;
+        }
     }
 
     /// return a byte vector containing the whole guest memory

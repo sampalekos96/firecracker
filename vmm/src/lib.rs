@@ -1303,11 +1303,16 @@ impl Vmm {
             self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
             info!("after configure_system() #pages present in memory is {}", self.pfns.len());
         } else {
+            let start = now_cputime_us();
             self.restore_mmio_devices();
+            let chk1 = now_cputime_us();
             let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
             let mut buf = Vec::new();
             mem_dump.read_to_end(&mut buf).unwrap();
-            self.guest_memory.clone().unwrap().load_regions(&buf);
+            self.guest_memory.clone().unwrap().load_init(&buf);
+            let chk2 = now_cputime_us();
+            println!("restoring mmio devices took {}us", chk1-start);
+            println!("restoring memory took {}ms", (chk2-chk1)/1000);
         }
 
         self.register_events()

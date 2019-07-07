@@ -23,8 +23,6 @@ use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, k
     kvm_mp_state, kvm_vcpu_events, kvm_fpu, kvm_xsave, kvm_xcrs,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
-    //kvm_irqfd, kvm_ioeventfd,
-    //kvm_ioeventfd_flag_nr_datamatch, kvm_ioeventfd_flag_nr_deassign,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -254,23 +252,10 @@ impl Vm {
         if from_file {
             setup_irqchip_from_file(&self.fd);
         }
-        //let ioapic = get_ioapic_state(&self.fd);
-        //std::fs::write("ioapic_before_register_irqfd.json", serde_json::to_string(&ioapic).unwrap()).ok();
-        //let pic = get_pic_state(&self.fd, true);
-        //std::fs::write("pic_master_before_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
-        //let pic = get_pic_state(&self.fd, false);
-        //std::fs::write("pic_slave_before_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
 
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
         self.fd.register_irqfd(com_evt_2_4, 3).map_err(Error::Irq)?;
         self.fd.register_irqfd(kbd_evt, 1).map_err(Error::Irq)?;
-
-        //let ioapic = get_ioapic_state(&self.fd);
-        //std::fs::write("ioapic_after_register_irqfd.json", serde_json::to_string(&ioapic).unwrap()).ok();
-        //let pic = get_pic_state(&self.fd, true);
-        //std::fs::write("pic_master_after_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
-        //let pic = get_pic_state(&self.fd, false);
-        //std::fs::write("pic_slave_after_register_irqfd.json", serde_json::to_string(&pic).unwrap()).ok();
 
         Ok(())
     }
@@ -554,60 +539,6 @@ impl Vcpu {
         })?;
         Ok(())
     }
-    // Yue: page size = 0x1000 Bytes (4KiB)
-    //      We will get EINVAL if the requirements below do not hold:
-    //      1. guest_phys_addr & 0xfff = 0
-    //      2. memory_size & 0xfff = 0
-    //      3. userspace_addr & 0xfff = 0 (this should hold if the first holds)
-    //      4. userspace_addr is accessible to guest OS
-    //fn set_page_writable(&self, data_addr: u64) -> Result<()> {
-    //    let data_size = 4 << 10; // page size = 4KiB
-
-    //    // assuming there is only one memory region
-    //    // this is true with 128 MB guest memory on x86
-    //    self.guest_mem.with_regions(|index, guest_addr, size, host_addr| {
-    //        info!("Making guest memory page containing {:x?} writable", data_addr);
-    //        if self.mmio_cnt == 0 {
-    //            let mut memory_region = kvm_userspace_memory_region {
-    //                slot: 0u32,
-    //                guest_phys_addr: guest_addr.offset() as u64,
-    //                memory_size: 0u64,
-    //                userspace_addr: host_addr as u64,
-    //                flags: 0u32,
-    //            };
-    //        }
-    //        self.vmfd.set_user_memory_region(memory_region)?;
-    //        info!("Deleted the entire memory region");
-    //        memory_region = kvm_userspace_memory_region {
-    //            slot: 0u32,
-    //            guest_phys_addr: guest_addr.offset() as u64,
-    //            memory_size: data_addr as u64,
-    //            userspace_addr: host_addr as u64,
-    //            flags: 0x2u32,
-    //        };
-    //        self.vmfd.set_user_memory_region(memory_region)?;
-    //        info!("Added memory before {:x?} as read-only", data_addr);
-    //        memory_region = kvm_userspace_memory_region {
-    //            slot: 1u32,
-    //            guest_phys_addr: data_addr as u64,
-    //            memory_size: data_size as u64,
-    //            userspace_addr: host_addr as u64 + data_addr,
-    //            flags: 0u32,
-    //        };
-    //        self.vmfd.set_user_memory_region(memory_region)?;
-    //        info!("Added target memory at {:x?} as writable", data_addr);
-    //        memory_region = kvm_userspace_memory_region {
-    //            slot: 2u32,
-    //            guest_phys_addr: data_addr + data_size as u64,
-    //            memory_size: (size - data_size) as u64 - data_addr + 1u64,
-    //            userspace_addr: (host_addr + data_size) as u64 + data_addr,
-    //            flags: 0x2u32,
-    //        };
-    //        self.vmfd.set_user_memory_region(memory_region)
-    //    })?;
-    //    info!("Succeeded");
-    //    Ok(())
-    //}
 
     // Get the list of indexes where bits are set in the number's binary representation
     fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
@@ -797,7 +728,8 @@ impl Vcpu {
                                 self.write_irqchip_to_file();
                                 let mut mem_dump = std::fs::OpenOptions::new()
                                     .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
-                                mem_dump.write_all(self.guest_mem.dump_regions().as_slice()).ok();
+
+                                mem_dump.write_all(self.guest_mem.dump_init().as_slice()).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
                                 return Err(Error::VcpuUnhandledKvmExit);
                             } else {
@@ -952,6 +884,7 @@ impl Vcpu {
 
         thread_barrier.wait();
 
+        super::Vmm::log_boot_time(&self.create_ts);
         //let my_pthread_t = unsafe { libc::pthread_self() };
         //std::thread::Builder::new()
         //    .name("kill_thread".to_string())
