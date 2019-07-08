@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
-use std::os::unix::io::AsRawFd;
 
 use devices;
 use kernel_cmdline;
@@ -108,13 +107,11 @@ impl MMIODeviceManager {
                 self.mmio_base + u64::from(devices::virtio::NOTIFY_REG_OFFSET),
             );
 
-            unsafe { super::super::QUEUE_EVT = queue_evt.as_raw_fd() };
             vm.register_ioevent(queue_evt, &io_addr, i as u32)
                 .map_err(Error::RegisterIoEvent)?;
         }
 
         if let Some(interrupt_evt) = mmio_device.interrupt_evt() {
-            unsafe { super::super::INTERRUPT_EVT = interrupt_evt.as_raw_fd() };
             vm.register_irqfd(interrupt_evt, self.irq)
                 .map_err(Error::RegisterIrqFd)?;
         }

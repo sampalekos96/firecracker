@@ -44,11 +44,6 @@ pub const FS_UPDATE_EVENT: DeviceEventT = 2;
 // Number of DeviceEventT events supported by this implementation.
 pub const BLOCK_EVENTS_COUNT: usize = 3;
 
-// interrupt_evt as RawFd value is initialized
-// inside devices/src/virtio/mmio.rs: MmioDevice::new()
-pub static mut INTERRUPT_EVT: RawFd = -1;
-pub static mut QUEUE_EVT: RawFd = -1;
-
 #[derive(Debug)]
 enum Error {
     /// Guest gave us bad memory addresses.
@@ -377,26 +372,11 @@ impl BlockEpollHandler {
     fn signal_used_queue(&self) -> result::Result<(), DeviceError> {
         self.interrupt_status
             .fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-        //self.interrupt_evt.write(1).map_err(|e| {
-        //    error!("Failed to signal used queue: {:?}", e);
-        //    METRICS.block.event_fails.inc();
-        //    DeviceError::FailedSignalingUsedQueue(e)
-        //})
-        let ret = unsafe {
-            libc::write(
-                INTERRUPT_EVT,
-                &1u64 as *const u64 as *const libc::c_void,
-                std::mem::size_of::<u64>(),
-            )
-        };
-        if ret <= 0 {
-            let e = io::Error::last_os_error();
+        self.interrupt_evt.write(1).map_err(|e| {
             error!("Failed to signal used queue: {:?}", e);
             METRICS.block.event_fails.inc();
-            Err(DeviceError::FailedSignalingUsedQueue(e))
-        } else {
-            Ok(())
-        }
+            DeviceError::FailedSignalingUsedQueue(e)
+        })
     }
 
     fn update_disk_image(&mut self, disk_image: File) -> result::Result<(), DeviceError> {
@@ -430,18 +410,7 @@ impl EpollHandler for BlockEpollHandler {
         match device_event {
             QUEUE_AVAIL_EVENT => {
                 METRICS.block.queue_event_count.inc();
-                //if let Err(e) = self.queue_evt.read() {
-                let mut buf: u64 = 0;
-                let ret = unsafe {
-                    // This is safe because we made this fd and the pointer we pass can not overflow because
-                    // we give the syscall's size parameter properly.
-                    libc::read(
-                        QUEUE_EVT,
-                        &mut buf as *mut u64 as *mut libc::c_void,
-                        std::mem::size_of::<u64>(),
-                    )
-                };
-                if ret < 0 {
+                if let Err(e) = self.queue_evt.read() {
                     let e = io::Error::last_os_error();
                     error!("Failed to get queue event: {:?}", e);
                     METRICS.block.event_fails.inc();
@@ -650,9 +619,6 @@ impl VirtioDevice for Block {
             METRICS.block.activate_fails.inc();
             return Err(ActivateError::BadActivate);
         }
-
-        unsafe{ INTERRUPT_EVT = interrupt_evt.as_raw_fd() };
-        unsafe{ QUEUE_EVT = queue_evts[0].as_raw_fd() };
 
         if let Some(disk_image) = self.disk_image.take() {
             let queue_evt = queue_evts.remove(0);
