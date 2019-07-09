@@ -48,7 +48,7 @@ mod vstate;
 
 use byteorder::{ByteOrder, LittleEndian};
 use futures::sync::oneshot;
-use std::collections::{HashMap, BTreeSet, BTreeMap};
+use std::collections::{HashMap};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
@@ -629,9 +629,6 @@ struct Vmm {
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
-
-    // Yue: PFNs of memory pages of self.guest_memory
-    pfns: BTreeMap<u64, usize>,
 }
 
 ///// kvm_irqchip that is serde-compatible
@@ -689,7 +686,6 @@ impl Vmm {
             from_api,
             write_metrics_event,
             seccomp_level,
-            pfns: BTreeMap::new(),
         })
     }
 
@@ -1290,14 +1286,8 @@ impl Vmm {
                 .load_kernel()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-            self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-            info!("after load_kernel() #pages present in memory is {}", self.pfns.len());
-
             self.configure_system()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-
-            self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-            info!("after configure_system() #pages present in memory is {}", self.pfns.len());
         } else {
             let start = now_cputime_us();
             self.restore_mmio_devices();
@@ -1317,9 +1307,6 @@ impl Vmm {
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-
-        self.pfns = self.guest_memory.clone().unwrap().get_pagemap();
-        info!("after create_vcpus() #pages present in memory is {}", self.pfns.len());
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
