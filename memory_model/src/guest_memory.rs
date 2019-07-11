@@ -7,6 +7,7 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
+use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use std::{mem, result};
@@ -33,8 +34,8 @@ pub enum Error {
     MemoryRegionOverlap,
     /// No memory regions were provided for initializing the guest memory.
     NoMemoryRegions,
-    /// mprotect_none failed
-    MprotectNoneFailed(std::io::Error),
+    /// I/O Error
+    IoError(std::io::Error),
 }
 type Result<T> = result::Result<T, Error>;
 
@@ -61,12 +62,6 @@ impl MemoryRegion {
     pub fn load(&self, buf: &[u8]) -> usize {
         self.mapping.write_slice(buf, 0).unwrap()
     }
-
-    /// load the given page into this memory region. only used in load_init function so the given
-    /// page is guaranteed to be within the region.
-    pub fn load_page(&self, offset: usize, buf: &[u8]) {
-        self.mapping.write_slice(buf, offset).unwrap();
-    }
 }
 
 fn region_end(region: &MemoryRegion) -> GuestAddress {
@@ -83,7 +78,7 @@ pub fn get_bit(num: u64, bit_pos: u64) -> u64 {
 pub fn mprotect_none(userspace_addr: *mut u8, len: usize) -> Result<()> {
     let ret = unsafe { libc::mprotect(userspace_addr as *mut libc::c_void, len, libc::PROT_NONE) };
     if ret == -1 {
-        return Err(Error::MprotectNoneFailed(std::io::Error::last_os_error()));
+        return Err(Error::IoError(std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -253,41 +248,39 @@ impl GuestMemory {
         pfns
     }
 
-    /// return a byte vector containing all initialized guest memory pages
+    /// Write all initialized guest memory pages to the provided writer
     /// Here being initialized means being present in physical RAM
-    /// the byte vector format is
+    /// The byte stream being written out consists of a sequence of
     /// guest physical frame (i.e. page) number (gpfn) in little endian (8 Bytes)
-    /// followed by the corresponding guest page (4096 Bytes)
-    pub fn dump_init(&self) -> Vec<u8> {
-        let mut dump = Vec::new();
-        for gpfn in self.get_pagemap().values() {
-            dump.append(&mut gpfn.to_le_bytes().to_vec());
-            let buf = &mut [0u8; 4096usize];
-            self.read_slice_at_addr(buf, GuestAddress(gpfn * 4096))
-                .map_err(|e| {
-                    println!("{:?}", e);
-                    e
-                });
-            dump.append(&mut buf.to_vec());
+    /// immediately followed by the corresponding guest page (4096 Bytes)
+    pub fn dump_init<F>(&self, writer: &mut F) -> Result<()>
+    where
+        F: Write,
+    {
+        let page_size = 4096usize;
+        let pagemap = self.get_pagemap();
+        for gpfn in pagemap.values() {
+            // write guest physical frame number
+            writer.write_all(&gpfn.to_le_bytes()[..]).map_err(|e| Error::IoError(e))?;
+            // write page content
+            self.write_from_memory(GuestAddress(gpfn * page_size), writer, page_size)?;
         }
-        dump
+        Ok(())
     }
 
-    /// load initialized memory from the given buffer
-    pub fn load_init(&self, buf: &Vec<u8>) {
-        let mut pos = 0usize;
-        while pos < buf.len() {
-            let gpfn_buf = &mut [0u8; 8usize];
-            gpfn_buf.copy_from_slice(&buf[pos..(pos + 8)]);
+    /// read from the provided memory dump file into guest memory
+    pub fn load_init<F>(&self, reader: &mut F) -> Result<()>
+    where
+        F: Read,
+    {
+        let page_size = 4096usize;
+        let gpfn_buf = &mut [0u8; 8usize];
+        // the loop should break out upon UnexpectedEof when the end is reached
+        while reader.read_exact(gpfn_buf).is_ok() {
             let gpfn = usize::from_le_bytes(*gpfn_buf);
-            pos += 8;
-            self.write_slice_at_addr(&buf[pos..(pos + 4096)], GuestAddress(gpfn * 4096))
-                .map_err(|e| {
-                    println!("{:?}", e);
-                    e
-                });
-            pos += 4096;
+            self.read_to_memory(GuestAddress(gpfn * page_size), reader, page_size)?;
         }
+        Ok(())
     }
 
     /// return a byte vector containing the whole guest memory

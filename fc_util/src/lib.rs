@@ -29,6 +29,16 @@ pub fn now_cputime_us() -> u64 {
     timespec_to_us(&time_struct)
 }
 
+pub fn now_monotime_us() -> u64 {
+    let mut time_struct = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Safe because the parameters are valid.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time_struct) };
+    timespec_to_us(&time_struct)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

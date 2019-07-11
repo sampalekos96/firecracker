@@ -35,7 +35,7 @@ use sys_util::EventFd;
 use sys_util::{
     ioctl, ioctl_with_mut_ptr, ioctl_with_mut_ref, ioctl_with_ptr, ioctl_with_ref, ioctl_with_val,
 };
-use fc_util::now_cputime_us;
+use fc_util::now_monotime_us;
 
 /// Wrapper over possible Kvm method Result.
 pub type Result<T> = result::Result<T, io::Error>;
@@ -593,14 +593,15 @@ impl VmFd {
 
         // fill the kvm_run from the kvm_run_dump file
         if from_file {
-            let start = now_cputime_us();
-            let mut ifile = std::fs::File::open("kvm_run_dump").unwrap();
+            let start = now_monotime_us();
+            let mut ifile = std::fs::File::open("/ssd/kvm_run_dump").unwrap();
             let mut buf = vec![0u8; self.run_size];
             ifile.read_exact(buf.as_mut_slice()).ok();
             let mut slice:&mut [u8] = unsafe { std::slice::from_raw_parts_mut(
                    kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, self.run_size) };
             slice.write(buf.as_slice()).ok();
-            println!("loading kvm_run took {}us", now_cputime_us()-start);
+            let end = now_monotime_us();
+            println!("loading kvm_run took {}us", end-start);
         }
 
         Ok(VcpuFd { vcpu, kvm_run_ptr })

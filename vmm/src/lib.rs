@@ -69,7 +69,7 @@ use device_manager::mmio::MMIODeviceManager;
 use devices::legacy::I8042DeviceError;
 use devices::virtio;
 use devices::{DeviceEventT, EpollHandler, EpollHandlerPayload};
-use fc_util::now_cputime_us;
+use fc_util::{now_monotime_us, now_cputime_us};
 use kernel::cmdline as kernel_cmdline;
 use kernel::loader as kernel_loader;
 use kvm::*;
@@ -97,6 +97,8 @@ use vstate::{Vcpu, Vm};
 pub static mut FROM_FILE: bool = false;
 /// dump machine states
 pub static mut DUMP: bool = false;
+/// snapshot on SSD
+pub static mut SSD: bool = false;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -937,14 +939,8 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        //if unsafe { FROM_FILE } {
-        //    self.guest_memory =
-        //        Some(GuestMemory::new_from_file(&arch_mem_regions)
-        //             .map_err(StartMicrovmError::GuestMemory)?);
-        //} else {
-            self.guest_memory =
-                Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
-        //}
+        self.guest_memory =
+            Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
         self.vm
             .memory_init(
                 self.guest_memory
@@ -1243,7 +1239,7 @@ impl Vmm {
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
 
-        let reader = BufReader::new(std::fs::File::open("queues.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/queues.json").unwrap());
         let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
         self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
     }
@@ -1257,7 +1253,7 @@ impl Vmm {
             ));
         }
         let request_ts = TimestampUs {
-            time_us: get_time_us(),
+            time_us: now_monotime_us(),
             cputime_us: now_cputime_us(),
         };
 
@@ -1289,16 +1285,15 @@ impl Vmm {
             self.configure_system()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         } else {
-            let start = now_cputime_us();
+            let t0 = now_monotime_us();
             self.restore_mmio_devices();
-            let chk1 = now_cputime_us();
-            let mut mem_dump = std::fs::File::open("runtime_mem_dump").unwrap();
-            let mut buf = Vec::new();
-            mem_dump.read_to_end(&mut buf).unwrap();
-            self.guest_memory.clone().unwrap().load_init(&buf);
-            let chk2 = now_cputime_us();
-            println!("restoring mmio devices took {}us", chk1-start);
-            println!("restoring memory took {}ms", (chk2-chk1)/1000);
+            let t1 = now_monotime_us();
+            let mem_dump = File::open("/ssd/runtime_mem_dump").unwrap();
+            let reader = &mut BufReader::new(mem_dump);
+            self.guest_memory.clone().unwrap().load_init(reader).ok();
+            let t2 = now_monotime_us();
+            println!("restoring mmio devices took {} us", t1-t0);
+            println!("restoring memory took {} ms", (t2-t1)/1000);
         }
 
         self.register_events()
@@ -1988,7 +1983,7 @@ impl Vmm {
 
     fn log_boot_time(t0_ts: &TimestampUs) {
         let now_cpu_us = now_cputime_us();
-        let now_us = get_time_us();
+        let now_us = now_monotime_us();
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;

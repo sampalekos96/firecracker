@@ -5,10 +5,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use fc_util::now_cputime_us;
+use fc_util::now_monotime_us;
 
 use std::io;
-use std::io::{Seek, SeekFrom, Write, Read, BufReader};
+use std::io::{Seek, SeekFrom, Write, Read, BufReader, BufWriter};
 use std::result;
 use std::sync::{Arc, Barrier};
 use std::collections::{BTreeSet, BTreeMap};
@@ -138,7 +138,7 @@ fn get_pic_state(vmfd: &VmFd, master: bool) -> kvm_pic_state {
 }
 
 fn setup_irqchip_from_file(vmfd: &VmFd) {
-    let reader = BufReader::new(std::fs::File::open("ioapic.json").unwrap());
+    let reader = BufReader::new(std::fs::File::open("/ssd/ioapic.json").unwrap());
     let ioapic: IoapicState = serde_json::from_reader(reader).unwrap();
     let mut irqchip = kvm_irqchip {
         chip_id: KVM_IRQCHIP_IOAPIC,
@@ -156,7 +156,7 @@ fn setup_irqchip_from_file(vmfd: &VmFd) {
     }
     vmfd.set_irqchip(&irqchip).ok();
 
-    let reader = BufReader::new(std::fs::File::open("pic_master.json").unwrap());
+    let reader = BufReader::new(std::fs::File::open("/ssd/pic_master.json").unwrap());
     let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
     irqchip = kvm_irqchip {
         chip_id: KVM_IRQCHIP_PIC_MASTER,
@@ -165,7 +165,7 @@ fn setup_irqchip_from_file(vmfd: &VmFd) {
     irqchip.chip.pic = pic;
     vmfd.set_irqchip(&irqchip).ok();
 
-    let reader = BufReader::new(std::fs::File::open("pic_slave.json").unwrap());
+    let reader = BufReader::new(std::fs::File::open("/ssd/pic_slave.json").unwrap());
     let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
     irqchip = kvm_irqchip {
         chip_id: KVM_IRQCHIP_PIC_SLAVE,
@@ -250,7 +250,10 @@ impl Vm {
     ) -> Result<()> {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         if from_file {
+            let start = now_monotime_us();
             setup_irqchip_from_file(&self.fd);
+            let end = now_monotime_us();
+            println!("restoring irqchip took {}us", end-start);
         }
 
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
@@ -360,7 +363,7 @@ impl Vcpu {
     }
 
     fn setup_msrs_from_file(&self) {
-        let reader = BufReader::new(std::fs::File::open("kvm_msrs.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_msrs.json").unwrap());
         let entries: Vec<kvm_msr_entry> = serde_json::from_reader(reader).unwrap();
 
         let vec_size_bytes =
@@ -379,11 +382,11 @@ impl Vcpu {
     }
 
     fn setup_regs_from_file(&self) {
-        let reader = BufReader::new(std::fs::File::open("kvm_regs.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_regs.json").unwrap());
         let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
         self.fd.set_regs(&regs).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_xsave.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_xsave.json").unwrap());
         let region_vec: Vec<u32> = serde_json::from_reader(reader).unwrap();
         let mut region = [0u32; 1024usize];
         for idx in 0..region.len() {
@@ -395,25 +398,25 @@ impl Vcpu {
         //let fpu: kvm_fpu = serde_json::from_reader(reader).unwrap();
         //self.fd.set_fpu(&fpu).ok();
         
-        let reader = BufReader::new(std::fs::File::open("kvm_xcrs.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_xcrs.json").unwrap());
         let xcrs: kvm_xcrs = serde_json::from_reader(reader).unwrap();
         self.fd.set_xcrs(&xcrs).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_sregs.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_sregs.json").unwrap());
         let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
         self.fd.set_sregs(&sregs).ok();
 
         self.setup_msrs_from_file();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_vcpu_events.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_vcpu_events.json").unwrap());
         let vcpu_events: kvm_vcpu_events = serde_json::from_reader(reader).unwrap();
         self.fd.set_vcpu_events(&vcpu_events).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_mp_state.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_mp_state.json").unwrap());
         let mp_state: kvm_mp_state = serde_json::from_reader(reader).unwrap();
         self.fd.set_mp_state(&mp_state).ok();
 
-        let reader = BufReader::new(std::fs::File::open("kvm_lapic.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_lapic.json").unwrap());
         let regs_vec: Vec<std::os::raw::c_char> = serde_json::from_reader(reader).unwrap();
         let mut regs = [0 as std::os::raw::c_char; 1024usize];
         for (idx, _) in regs_vec.iter().enumerate() {
@@ -497,9 +500,10 @@ impl Vcpu {
             .map_err(Error::SetSupportedCpusFailed)?;
 
         if from_file {
-            let start = now_cputime_us();
+            let start = now_monotime_us();
             self.setup_regs_from_file();
-            println!("loading registers took {}us", now_cputime_us()-start);
+            let end = now_monotime_us();
+            println!("loading registers took {}us", end-start);
         } else {
             arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
             // Safe to unwrap because this method is called after the VM is configured
@@ -726,10 +730,10 @@ impl Vcpu {
                                 println!("dumping states");
                                 self.write_regs_to_file();
                                 self.write_irqchip_to_file();
-                                let mut mem_dump = std::fs::OpenOptions::new()
+                                let mem_dump = std::fs::OpenOptions::new()
                                     .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
-
-                                mem_dump.write_all(self.guest_mem.dump_init().as_slice()).ok();
+                                let writer = &mut BufWriter::new(mem_dump);
+                                self.guest_mem.dump_init(writer).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
                                 return Err(Error::VcpuUnhandledKvmExit);
                             } else {
