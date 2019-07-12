@@ -205,7 +205,7 @@ impl GuestMemory {
         num & 0x7FFFFFFFFFFFFF
     }
 
-    /// return a mapping from host physical page numbers to guest physical page numbers
+    /// return a mapping from guest physical page numbers to host physical page numbers
     /// for the given virtual address range
     fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
     -> BTreeMap<u64, usize> {
@@ -230,7 +230,7 @@ impl GuestMemory {
         pfns
     }
 
-    /// return a mapping from host physical page numbers to guest physical page numbers
+    /// return a mapping from guest physical page numbers to host physical page numbers
     /// for the entire guest memory
     pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
@@ -258,12 +258,31 @@ impl GuestMemory {
         F: Write,
     {
         let page_size = 4096usize;
-        let pagemap = self.get_pagemap();
-        for gpfn in pagemap.values() {
-            // write guest physical frame number
-            writer.write_all(&gpfn.to_le_bytes()[..]).map_err(|e| Error::IoError(e))?;
+        let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
+        gpfns.as_mut_slice().sort();
+        let mut start = 0usize;
+        let mut test = 1usize;
+        let mut ri = 0usize; // index into self.regions
+        while test < gpfns.len() {
+            // find the end of current dump region
+            while test < gpfns.len() && gpfns[test] - gpfns[test-1] == 1 {
+                if gpfns[test] * page_size >= region_end(&self.regions[ri]).offset() {
+                    ri += 1;
+                    break;
+                }
+                test += 1;
+            }
+            println!("start {} size {}", gpfns[start], test-start);
+            writer.write_all(&gpfns[start].to_le_bytes()).map_err(|e| Error::IoError(e))?;
+            writer.write_all(&(test-start).to_le_bytes()).map_err(|e| Error::IoError(e))?;
             // write page content
-            self.write_from_memory(GuestAddress(gpfn * page_size), writer, page_size)?;
+            self.write_from_memory(
+                GuestAddress(gpfns[start] * page_size),
+                writer,
+                (test - start) * page_size)?;
+            // start a new dump region
+            start = test;
+            test = start + 1;
         }
         Ok(())
     }
@@ -274,11 +293,13 @@ impl GuestMemory {
         F: Read,
     {
         let page_size = 4096usize;
-        let gpfn_buf = &mut [0u8; 8usize];
+        let buf = &mut [0u8; 8usize];
         // the loop should break out upon UnexpectedEof when the end is reached
-        while reader.read_exact(gpfn_buf).is_ok() {
-            let gpfn = usize::from_le_bytes(*gpfn_buf);
-            self.read_to_memory(GuestAddress(gpfn * page_size), reader, page_size)?;
+        while reader.read_exact(buf).is_ok() {
+            let gpfn = usize::from_le_bytes(*buf);
+            reader.read_exact(buf).unwrap();
+            let cnt = usize::from_le_bytes(*buf);
+            self.read_to_memory(GuestAddress(gpfn * page_size), reader, cnt * page_size)?;
         }
         Ok(())
     }
