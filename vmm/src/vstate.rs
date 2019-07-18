@@ -692,6 +692,9 @@ impl Vcpu {
                             _ => println!("unknown event")
                         }
                     }
+                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
+                        panic!("mounting app file system failed");
+                    }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
@@ -741,9 +744,7 @@ impl Vcpu {
                                 std::fs::write("kvm_regs_regular_run.json",
                                                serde_json::to_string(&regs).unwrap()).ok();
                             }
-                        } else if self.magic_port_cnt == 4 {
-                            info!("Imports finished. #pages in memory is {}", pagemap.len());
-                        } else if self.magic_port_cnt == 5 {
+                        } else {
                             info!("App done. #pages in memory is {}", pagemap.len());
                             //write!(log, "{},{}\n",
                             //       dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),

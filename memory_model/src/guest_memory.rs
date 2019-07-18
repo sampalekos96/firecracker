@@ -263,13 +263,10 @@ impl GuestMemory {
         let mut start = 0usize;
         let mut test = 1usize;
         let mut ri = 0usize; // index into self.regions
-        while test < gpfns.len() {
+        loop {
             // find the end of current dump region
-            while test < gpfns.len() && gpfns[test] - gpfns[test-1] == 1 {
-                if gpfns[test] * page_size >= region_end(&self.regions[ri]).offset() {
-                    ri += 1;
-                    break;
-                }
+            while test < gpfns.len() && gpfns[test] - gpfns[test-1] == 1
+                && gpfns[test] * page_size < region_end(&self.regions[ri]).offset() {
                 test += 1;
             }
             println!("start {} size {}", gpfns[start], test-start);
@@ -283,6 +280,12 @@ impl GuestMemory {
             // start a new dump region
             start = test;
             test = start + 1;
+            if start >= gpfns.len() {
+                break;
+            }
+            while gpfns[start] * page_size >= region_end(&self.regions[ri]).offset() {
+                ri += 1;
+            }
         }
         Ok(())
     }
