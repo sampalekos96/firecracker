@@ -690,6 +690,9 @@ impl Vcpu {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
                         panic!("mounting app file system failed");
                     }
+                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
+                        panic!("loading app failed");
+                    }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {

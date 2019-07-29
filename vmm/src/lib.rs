@@ -1189,9 +1189,9 @@ impl Vmm {
         Ok(())
     }
 
-    fn restore_mmio_devices(&mut self) {
+    fn restore_mmio_device(&mut self, index: u64) {
         //manually replay writes to mmio device
-        let base = 0xd000_0000u64; // this is the mmio base addr of rootfs
+        let base = 0xd000_0000u64 + index*4096; // index: rootfs=0, appfs=1
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
         let mut data = [0u8; 4];
         let zero = [0u8; 4];
@@ -1239,7 +1239,7 @@ impl Vmm {
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/queues.json").unwrap());
+        let reader = BufReader::new(std::fs::File::open(format!("/ssd/queues_{}.json", index)).unwrap());
         let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
         self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
     }
@@ -1286,7 +1286,8 @@ impl Vmm {
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         } else {
             let t0 = now_monotime_us();
-            self.restore_mmio_devices();
+            self.restore_mmio_device(0);
+            self.restore_mmio_device(1);
             let t1 = now_monotime_us();
             let mem_dump = File::open("/ssd/runtime_mem_dump").unwrap();
             let reader = &mut BufReader::new(mem_dump);
@@ -1483,7 +1484,10 @@ impl Vmm {
             }
             if exit {
                 let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
-                std::fs::write("/ssd/queues.json",
+                std::fs::write("/ssd/queues_0.json",
+                                serde_json::to_string(&queues).unwrap()).ok();
+                let queues = self.epoll_context.get_device_handler(1).unwrap().get_queues();
+                std::fs::write("/ssd/queues_1.json",
                                 serde_json::to_string(&queues).unwrap()).ok();
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
