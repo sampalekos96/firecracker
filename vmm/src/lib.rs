@@ -1483,7 +1483,7 @@ impl Vmm {
             }
             if exit {
                 let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
-                std::fs::write("queues.json",
+                std::fs::write("/ssd/queues.json",
                                 serde_json::to_string(&queues).unwrap()).ok();
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }

@@ -358,7 +358,7 @@ impl Vcpu {
 
         unsafe {
             let entries: Vec<kvm_msr_entry> = msrs.entries.as_slice(entry_vec.len()).to_vec();
-            std::fs::write("kvm_msrs.json", serde_json::to_string(&entries).unwrap()).ok();
+            std::fs::write("/ssd/kvm_msrs.json", serde_json::to_string(&entries).unwrap()).ok();
         }
     }
 
@@ -428,38 +428,38 @@ impl Vcpu {
 
     fn write_regs_to_file(&self) {
         let vcpu_events = self.fd.get_vcpu_events().unwrap();
-        std::fs::write("kvm_vcpu_events.json", serde_json::to_string(&vcpu_events).unwrap()).ok();
+        std::fs::write("/ssd/kvm_vcpu_events.json", serde_json::to_string(&vcpu_events).unwrap()).ok();
 
         let mp_state = self.fd.get_mp_state().unwrap();
-        std::fs::write("kvm_mp_state.json", serde_json::to_string(&mp_state).unwrap()).ok();
+        std::fs::write("/ssd/kvm_mp_state.json", serde_json::to_string(&mp_state).unwrap()).ok();
 
         let regs = self.fd.get_regs().unwrap();
-        std::fs::write("kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
+        std::fs::write("/ssd/kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
 
         let xsave = self.fd.get_xsave().unwrap();
-        std::fs::write("kvm_xsave.json", serde_json::to_string(&xsave.region.to_vec()).unwrap()).ok();
+        std::fs::write("/ssd/kvm_xsave.json", serde_json::to_string(&xsave.region.to_vec()).unwrap()).ok();
         //let fpu = self.fd.get_fpu().unwrap();
         //std::fs::write("kvm_fpu.json", serde_json::to_string(&fpu).unwrap()).ok();
 
         let xcrs = self.fd.get_xcrs().unwrap();
-        std::fs::write("kvm_xcrs.json", serde_json::to_string(&xcrs).unwrap()).ok();
+        std::fs::write("/ssd/kvm_xcrs.json", serde_json::to_string(&xcrs).unwrap()).ok();
 
         let sregs = self.fd.get_sregs().unwrap();
-        std::fs::write("kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
+        std::fs::write("/ssd/kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
 
         self.write_msrs_to_file();
 
         let lapic = self.fd.get_lapic().unwrap();
-        std::fs::write("kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
+        std::fs::write("/ssd/kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
     }
 
     fn write_irqchip_to_file(&self) {
         let ioapic = get_ioapic_state(&self._vmfd);
-        std::fs::write("ioapic.json", serde_json::to_string(&ioapic).unwrap()).ok();
+        std::fs::write("/ssd/ioapic.json", serde_json::to_string(&ioapic).unwrap()).ok();
         let pic = get_pic_state(&self._vmfd, true);
-        std::fs::write("pic_master.json", serde_json::to_string(&pic).unwrap()).ok();
+        std::fs::write("/ssd/pic_master.json", serde_json::to_string(&pic).unwrap()).ok();
         let pic = get_pic_state(&self._vmfd, false);
-        std::fs::write("pic_slave.json", serde_json::to_string(&pic).unwrap()).ok();
+        std::fs::write("/ssd/pic_slave.json", serde_json::to_string(&pic).unwrap()).ok();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -734,7 +734,7 @@ impl Vcpu {
                                 self.write_regs_to_file();
                                 self.write_irqchip_to_file();
                                 let mem_dump = std::fs::OpenOptions::new()
-                                    .write(true).truncate(true).create(true).open("runtime_mem_dump").unwrap();
+                                    .write(true).truncate(true).create(true).open("/ssd/runtime_mem_dump").unwrap();
                                 let writer = &mut BufWriter::new(mem_dump);
                                 self.guest_mem.dump_init(writer).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());

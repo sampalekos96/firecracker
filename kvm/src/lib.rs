@@ -694,7 +694,7 @@ impl VcpuFd {
     /// Dump kvm_run
     pub fn dump_kvm_run(&self, run_size: usize) {
         let mut ofile = std::fs::OpenOptions::new()
-            .write(true).truncate(true).create(true).open("kvm_run_dump").unwrap();
+            .write(true).truncate(true).create(true).open("/ssd/kvm_run_dump").unwrap();
 
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(
                 self.kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, run_size) };
