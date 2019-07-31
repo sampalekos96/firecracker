@@ -685,12 +685,7 @@ impl Vcpu {
                 VcpuExit::IoOut(addr, data) => {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 124 {
                         self.magic_124_cnt += 1;
-                        match self.magic_124_cnt {
-                            1 => println!("loading json file done"),
-                            2 => println!("calculation file done"),
-                            3 => println!("outputing result done"),
-                            _ => println!("unknown event")
-                        }
+                        println!("magic port value 124 count {}", self.magic_124_cnt);
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
                         panic!("mounting app file system failed");
@@ -714,19 +709,15 @@ impl Vcpu {
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             if unsafe { super::FROM_FILE } {
-                                println!("Import done.");
+                                println!("App done. Shutting down...");
+                                return Err(Error::VcpuUnhandledKvmExit);
                             } else {
                                 super::Vmm::log_boot_time(&self.create_ts);
                                 println!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
                             }
                         } else if self.magic_port_cnt == 2 {
-                            if unsafe { super::FROM_FILE } {
-                                println!("App done. Shutting down...");
-                                return Err(Error::VcpuUnhandledKvmExit);
-                            }
-                            info!("Init finished. #pages in memory is {}", pagemap.len());
+                            println!("Init finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 3 {
-                            info!("Runtime is up. #pages in memory is {}", pagemap.len());
                             println!("Runtime is up. #pages in memory is {}", pagemap.len());
                             if unsafe{ super::DUMP } {
                                 //unsafe { libc::sleep(30) };
@@ -739,13 +730,9 @@ impl Vcpu {
                                 self.guest_mem.dump_init(writer).ok();
                                 self.fd.dump_kvm_run(self._vmfd.get_run_size());
                                 return Err(Error::VcpuUnhandledKvmExit);
-                            } else {
-                                let regs = self.fd.get_regs().unwrap();
-                                std::fs::write("kvm_regs_regular_run.json",
-                                               serde_json::to_string(&regs).unwrap()).ok();
                             }
                         } else {
-                            info!("App done. #pages in memory is {}", pagemap.len());
+                            println!("App done. #pages in memory is {}", pagemap.len());
                             //write!(log, "{},{}\n",
                             //       dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
                             //       dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
