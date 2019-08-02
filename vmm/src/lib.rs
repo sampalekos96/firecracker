@@ -1241,7 +1241,7 @@ impl Vmm {
 
         let reader = BufReader::new(std::fs::File::open(format!("/ssd/queues_{}.json", index)).unwrap());
         let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
-        self.epoll_context.get_device_handler(0).unwrap().set_queues(&queues);
+        self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
     }
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
