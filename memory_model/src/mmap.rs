@@ -10,7 +10,6 @@
 
 use std;
 use std::io::{self, Read, Write};
-use std::os::unix::io::AsRawFd;
 use std::ptr::null_mut;
 
 use libc;
@@ -64,34 +63,6 @@ impl MemoryMapping {
                 libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
                 -1,
                 0,
-            )
-        };
-        //unsafe { libc::memset(addr, 0, size) };
-        if addr == libc::MAP_FAILED {
-            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
-        }
-        Ok(MemoryMapping {
-            addr: addr as *mut u8,
-            size,
-        })
-    }
-
-    /// Same as new but mmap takes in a file
-    ///
-    /// # Arguments
-    /// * `size` - Size of memory region in bytes.
-    pub fn new_from_file(size: usize, offset: usize) -> Result<MemoryMapping> {
-        // This is safe because we are creating an anonymous mapping in a place not already used by
-        // any other area in this process.
-        let fd = std::fs::OpenOptions::new().read(true).write(true).open("runtime_mem_dump").unwrap();
-        let addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED | libc::MAP_NORESERVE,
-                fd.as_raw_fd(),
-                offset as libc::off_t,
             )
         };
         if addr == libc::MAP_FAILED {

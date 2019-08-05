@@ -48,7 +48,7 @@ mod vstate;
 
 use byteorder::{ByteOrder, LittleEndian};
 use futures::sync::oneshot;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
@@ -78,7 +78,7 @@ use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
-pub use sigsys_handler::*;
+pub use sigsys_handler::setup_sigsys_handler;
 use sys_util::{EventFd, Terminal};
 use vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
 use vmm_config::drive::{BlockDeviceConfig, BlockDeviceConfigs, DriveError};
@@ -630,14 +630,6 @@ struct Vmm {
     dump_dir: Option<PathBuf>,
 }
 
-///// kvm_irqchip that is serde-compatible
-//#[derive(Serialize, Deserialize)]
-//pub struct Kvm_irqchip_serde {
-//    pub chip_id: __u32,
-//    pub pad: __u32,
-//    pub chip: [std::os::raw::c_char; 512usize],
-//}
-
 impl Vmm {
     fn new(
         api_shared_info: Arc<RwLock<InstanceInfo>>,
@@ -881,7 +873,8 @@ impl Vmm {
         for cfg in self.vsock_device_configs.iter() {
             let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
 
-            let vsock_box = Box::new( devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+            let vsock_box = Box::new(
+                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -1100,11 +1093,6 @@ impl Vmm {
         // altogether is the desired behaviour.
         default_syscalls::set_seccomp_level(self.seccomp_level)
             .map_err(StartMicrovmError::SeccompFilters)?;
-
-        #[cfg(target_arch = "x86_64")]
-        self.get_dirty_page_count();
-        #[cfg(target_arch = "x86_64")]
-        info!("The dirty log is cleared");
 
         vcpus_thread_barrier.wait();
 

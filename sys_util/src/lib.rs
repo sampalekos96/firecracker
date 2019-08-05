@@ -14,7 +14,7 @@ use libc::c_int;
 pub mod ioctl;
 
 mod eventfd;
-pub mod signal;
+mod signal;
 mod struct_util;
 mod terminal;
 

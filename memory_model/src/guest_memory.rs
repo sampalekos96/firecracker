@@ -7,7 +7,6 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
-use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use std::{mem, result};
@@ -50,18 +49,6 @@ impl MemoryRegion {
     pub fn size(&self) -> usize {
         self.mapping.size()
     }
-
-    /// dump the memory region to a file
-    pub fn dump(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; self.mapping.size()];
-        assert_eq!(self.mapping.read_slice(buf.as_mut_slice(), 0).unwrap(), self.mapping.size());
-        buf
-    }
-
-    /// load content provided in `buf` into guest memory
-    pub fn load(&self, buf: &[u8]) -> usize {
-        self.mapping.write_slice(buf, 0).unwrap()
-    }
 }
 
 fn region_end(region: &MemoryRegion) -> GuestAddress {
@@ -72,15 +59,6 @@ fn region_end(region: &MemoryRegion) -> GuestAddress {
 /// utility function to get the bit at `bit_pos` of `num`
 pub fn get_bit(num: u64, bit_pos: u64) -> u64 {
     (num & (1u64 << bit_pos)) >> bit_pos
-}
-
-/// call libc::mprotect to make given memory page(s) as not accessible
-pub fn mprotect_none(userspace_addr: *mut u8, len: usize) -> Result<()> {
-    let ret = unsafe { libc::mprotect(userspace_addr as *mut libc::c_void, len, libc::PROT_NONE) };
-    if ret == -1 {
-        return Err(Error::IoError(std::io::Error::last_os_error()));
-    }
-    Ok(())
 }
 
 /// Tracks all memory regions allocated for the guest in the current process.
@@ -110,39 +88,6 @@ impl GuestMemory {
             }
 
             let mapping = MemoryMapping::new(range.1).map_err(Error::MemoryMappingFailed)?;
-            regions.push(MemoryRegion {
-                mapping,
-                guest_base: range.0,
-            });
-        }
-
-        Ok(GuestMemory {
-            regions: Arc::new(regions),
-        })
-    }
-
-    /// Same as new but memory are backed by the provided file
-    pub fn new_from_file(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
-        println!("Guest Memory is backed by runtime_mem_dump");
-        if ranges.is_empty() {
-            return Err(Error::NoMemoryRegions);
-        }
-
-        let mut regions = Vec::<MemoryRegion>::new();
-        for range in ranges.iter() {
-            let mut offset: usize = 0;
-            if let Some(last) = regions.last() {
-                if last
-                    .guest_base
-                    .checked_add(last.mapping.size())
-                    .map_or(true, |a| a > range.0)
-                {
-                    return Err(Error::MemoryRegionOverlap);
-                }
-                offset = last.guest_base.offset();
-            }
-
-            let mapping = MemoryMapping::new_from_file(range.1, offset).map_err(Error::MemoryMappingFailed)?;
             regions.push(MemoryRegion {
                 mapping,
                 guest_base: range.0,
@@ -307,26 +252,6 @@ impl GuestMemory {
         Ok(())
     }
 
-    /// return a byte vector containing the whole guest memory
-    pub fn dump_regions(&self) -> Vec<u8> {
-        let mut dump = Vec::new();
-        for region in self.regions.iter() {
-            dump.append(&mut region.dump());
-        }
-        dump
-    }
-
-    /// load the memory with the content passed in buffer
-    pub fn load_regions(&self, buf: &Vec<u8>) {
-        let mut pos = 0usize;
-        for region in self.regions.iter() {
-            let bytes_written = region.load(&buf[pos..pos+region.size()]);
-            assert_eq!(bytes_written, region.size());
-            pos += region.size();
-        }
-        assert_eq!(pos, buf.len());
-    }
-
     /// Perform the specified action on each region's addresses.
     pub fn with_regions<F, E>(&self, cb: F) -> result::Result<(), E>
     where
@@ -357,14 +282,6 @@ impl GuestMemory {
                     region.mapping.as_ptr() as usize,
                 )?;
             }
-        }
-        Ok(())
-    }
-
-    /// perform specified action on himem regions
-    pub fn mark_regions_nrnw(&self) -> Result<()> {
-        for (_index, region) in self.regions.iter().enumerate() {
-            mprotect_none(region.mapping.as_ptr(), region.mapping.size())?;
         }
         Ok(())
     }

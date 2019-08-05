@@ -45,15 +45,6 @@ fn main() {
         process::exit(i32::from(vmm::FC_EXIT_CODE_GENERIC_ERROR));
     }
 
-    if let Err(e) = vmm::setup_sigsegv_handler() {
-        error!("Failed to register signal handler: {}", e);
-        process::exit(i32::from(vmm::FC_EXIT_CODE_GENERIC_ERROR));
-    }
-
-    if let Err(e) = vmm::setup_sigrtmin_handler() {
-        error!("Failed to register signal handler: {}", e);
-        process::exit(i32::from(vmm::FC_EXIT_CODE_GENERIC_ERROR));
-    }
     // Start firecracker by setting up a panic hook, which will be called before
     // terminating as we're building with panic = "abort".
     // It's worth noting that the abort is caused by sending a SIG_ABORT signal to the process.

@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
 
 //! A safe wrapper around the kernel's KVM interface.
 
@@ -40,8 +40,6 @@ pub type Result<T> = result::Result<T, io::Error>;
 pub use cap::*;
 use ioctl_defs::*;
 pub use kvm_bindings::KVM_API_VERSION;
-pub use ioctl_defs::KVM_IRQFD;
-pub use ioctl_defs::KVM_IOEVENTFD;
 
 /// Taken from Linux Kernel v4.14.13 (arch/x86/include/asm/kvm_host.h)
 pub const MAX_KVM_CPUID_ENTRIES: usize = 80;

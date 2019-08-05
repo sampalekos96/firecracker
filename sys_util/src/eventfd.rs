@@ -13,7 +13,7 @@ use libc::{c_void, dup, eventfd, read, write, EFD_NONBLOCK};
 /// An eventfd is useful because it is sendable across processes and can be used for signaling in
 /// and out of the KVM API. They can also be polled like any other file descriptor.
 pub struct EventFd {
-    pub eventfd: File,
+    eventfd: File,
 }
 
 impl EventFd {
