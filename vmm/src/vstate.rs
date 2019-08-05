@@ -8,10 +8,9 @@
 use fc_util::now_monotime_us;
 
 use std::io;
-use std::io::{Seek, SeekFrom, Write, Read, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter};
 use std::result;
 use std::sync::{Arc, Barrier};
-use std::collections::{BTreeSet, BTreeMap};
 use std::path::PathBuf;
 use std::fs::File;
 
@@ -547,157 +546,6 @@ impl Vcpu {
             arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
         }
         Ok(())
-    }
-
-    fn _set_himem_readonly(&self) -> Result<()> {
-        self.guest_mem.with_himem_regions(|index, guest_addr, size, host_addr| {
-            info!("Making guest memory read-only starting at {:x?} with size {}", host_addr, size);
-            // delete
-            let mut memory_region = kvm_userspace_memory_region {
-                slot: index as u32,
-                guest_phys_addr: guest_addr.offset() as u64,
-                memory_size:0u64,
-                userspace_addr: host_addr as u64,
-                flags: 0u32,
-            };
-            self._vmfd.set_user_memory_region(memory_region)?;
-            // add back as read only
-            memory_region = kvm_userspace_memory_region {
-                slot: index as u32,
-                guest_phys_addr: guest_addr.offset() as u64,
-                memory_size: size as u64,
-                userspace_addr: host_addr as u64,
-                flags: 0x2u32,
-            };
-            self._vmfd.set_user_memory_region(memory_region)
-        })?;
-        Ok(())
-    }
-
-    // Get the list of indexes where bits are set in the number's binary representation
-    fn _list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
-        let mut mask: u64 = 1;
-        let mut res: BTreeSet<usize> = BTreeSet::new();
-        for index in 0..64 as usize {
-            if num & mask != 0 {
-                res.insert(num_pages + offset * 64 + index);
-            }
-            mask <<= 1;
-        }
-        return res
-    }
-
-    // Get the list of dirty pages since the last call to this function.
-    // Because this is used for metrics, it swallows most errors and simply returns empty set
-    // if the KVM operation fails.
-    fn _get_dirty_page_list(&self) -> BTreeSet<usize> {
-        let mut num_pages: usize = 0;
-        let dirty_pages = self.guest_mem.map_and_fold(
-            BTreeSet::new(),
-            |(slot, memory_region)| {
-                let bitmap = self
-                    ._vmfd
-                    .get_dirty_log(slot as u32, memory_region.size());
-                match bitmap {
-                    Ok(v) => {
-                        let union = v
-                            .iter()
-                            .enumerate()
-                            .map(|(offset, page)| Vcpu::_list_set_bits(num_pages, offset, *page))
-                            .fold(BTreeSet::new(),
-                                  |init, page_list| init.union(&page_list).cloned().collect());
-                        num_pages += memory_region.size()/(4<<10);
-                        return union
-                    },
-                    Err(_) => BTreeSet::new(),
-                }
-            },
-            |dirty_pages, region_dirty_pages|
-                dirty_pages.union(&region_dirty_pages).cloned().collect(),
-        );
-        dirty_pages
-    }
-
-    /// set all pfns in pagemap to idle
-    fn _clear_accessed_log(sorted_pfns: &Vec<u64>) {
-        let path = "/sys/kernel/mm/page_idle/bitmap";
-        let mut idle_log = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-
-        let seek_offset = (sorted_pfns[0] / 64) * 8;
-        idle_log.seek(SeekFrom::Start(seek_offset)).err();
-
-        let buf_size: usize = 8 * (1 + sorted_pfns[sorted_pfns.len()-1] / 64 - sorted_pfns[0] / 64) as usize;
-        let buf = vec![0xff as u8; buf_size];
-        idle_log.write_all(&buf).err();
-    }
-
-    fn _read_accessed_log(pagemap: &BTreeMap<u64, usize>, sorted_pfns: &Vec<u64>) -> BTreeSet<usize> {
-        // open the bitmap file
-        let path = "/sys/kernel/mm/page_idle/bitmap";
-        let mut idle_log = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
-        // decide the start index,
-        // pfn/64 the index into the array with entry size 8B
-        // pfn/64 * 8 number of bytes to skip
-        let seek_offset = (sorted_pfns[0] / 64) * 8;
-        idle_log.seek(SeekFrom::Start(seek_offset)).err();
-        // decide number of bytes to read
-        let buf_size: usize = 8 * (1 + sorted_pfns[sorted_pfns.len()-1] / 64 - sorted_pfns[0] / 64) as usize;
-        let mut buf = vec![0 as u8; buf_size];
-        idle_log.read_exact(&mut buf).err();
-
-        let mut byte_array = [0u8; 8];
-        let mut accessed_list = BTreeSet::new();
-        let mut buf_i = 0 as usize;
-        let mut bitmap_i = sorted_pfns[0] / 64;
-        for (pfn, page_i) in pagemap.iter() {
-            while pfn / 64 != bitmap_i {
-                bitmap_i += 1;
-                buf_i += 8;
-            }
-            for i in 0..8 {
-                byte_array[i] = buf[buf_i+i];
-            }
-            let entry = u64::from_le_bytes(byte_array);
-            let bit_pos = pfn % 64;
-            if memory_model::get_bit(entry, bit_pos) == 0 {
-                accessed_list.insert(*page_i);
-            }
-        }
-
-        accessed_list
-    }
-
-    fn _get_and_clear_accessed_log(&self, pagemap: &BTreeMap<u64, usize>) -> BTreeSet<usize> {
-        let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
-
-        let ret = Vcpu::_read_accessed_log(&pagemap, &sorted_pfns);
-        if sorted_pfns.len() > 0 {
-            Vcpu::_clear_accessed_log(&sorted_pfns);
-        }
-        ret
-    }
-
-    fn _calculate_intersection(sets: &Vec<BTreeSet<usize>>) -> Vec<Vec<BTreeSet<usize>>> {
-        let mut unioned_setup: BTreeSet<usize>;
-        let mut unioned_app: BTreeSet<usize>;
-        let mut unions: Vec<Vec<BTreeSet<usize>>> = Vec::new();
-        for i in 0..(sets.len()-1) {
-            unioned_setup = BTreeSet::new();
-            unioned_app = BTreeSet::new();
-            let mut tuple: Vec<BTreeSet<usize>> = Vec::new();
-            for j in 0..=i {
-                unioned_setup = unioned_setup.union(&sets[j]).cloned().collect();
-            }
-            for j in (i+1)..sets.len() {
-                unioned_app = unioned_app.union(&sets[j]).cloned().collect();
-            }
-            let unioned = unioned_app.intersection(&unioned_setup).cloned().collect();
-            tuple.push(unioned_setup);
-            tuple.push(unioned_app);
-            tuple.push(unioned);
-            unions.push(tuple);
-        }
-        unions
     }
 
     fn run_emulation(&mut self, from_snapshot: bool, dump_dir: &mut Option<PathBuf>) -> Result<()> {
