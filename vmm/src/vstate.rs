@@ -12,6 +12,8 @@ use std::io::{Seek, SeekFrom, Write, Read, BufReader, BufWriter};
 use std::result;
 use std::sync::{Arc, Barrier};
 use std::collections::{BTreeSet, BTreeMap};
+use std::path::PathBuf;
+use std::fs::File;
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -20,7 +22,7 @@ use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
 use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
-    kvm_mp_state, kvm_vcpu_events, kvm_fpu, kvm_xsave, kvm_xcrs,
+    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
@@ -86,6 +88,8 @@ pub enum Error {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     /// Error getting the dirty log
     GetDirtyLog(io::Error),
+    /// Error restoring all vcpu states
+    LoadSnapshot(io::Error),
 }
 pub type Result<T> = result::Result<T, Error>;
 
@@ -105,12 +109,12 @@ struct IoapicState {
    pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
 }
     
-fn get_ioapic_state(vmfd: &VmFd) -> IoapicState {
+fn get_ioapic_state(vmfd: &VmFd) -> result::Result<IoapicState, io::Error> {
     let mut irqchip = kvm_irqchip {
         chip_id: KVM_IRQCHIP_IOAPIC,
         ..Default::default()
     };
-    vmfd.get_irqchip(&mut irqchip).ok();
+    vmfd.get_irqchip(&mut irqchip)?;
     let kioapic = unsafe { irqchip.chip.ioapic };
     let mut ioapic = IoapicState {
         base_address: kioapic.base_address,
@@ -125,54 +129,16 @@ fn get_ioapic_state(vmfd: &VmFd) -> IoapicState {
             ioapic.redirtbl[i] = kioapic.redirtbl[i].fields;
         }
     };
-    ioapic
+    Ok(ioapic)
 }
 
-fn get_pic_state(vmfd: &VmFd, master: bool) -> kvm_pic_state {
+fn get_pic_state(vmfd: &VmFd, master: bool) -> result::Result<kvm_pic_state, io::Error> {
     let mut irqchip = kvm_irqchip {
         chip_id: if master { KVM_IRQCHIP_PIC_MASTER } else { KVM_IRQCHIP_PIC_SLAVE },
         ..Default::default()
     };
-    vmfd.get_irqchip(&mut irqchip).ok();
-    unsafe { irqchip.chip.pic }
-}
-
-fn setup_irqchip_from_file(vmfd: &VmFd) {
-    let reader = BufReader::new(std::fs::File::open("/ssd/ioapic.json").unwrap());
-    let ioapic: IoapicState = serde_json::from_reader(reader).unwrap();
-    let mut irqchip = kvm_irqchip {
-        chip_id: KVM_IRQCHIP_IOAPIC,
-        ..Default::default() 
-    };
-    unsafe {
-        irqchip.chip.ioapic.base_address = ioapic.base_address;
-        irqchip.chip.ioapic.ioregsel = ioapic.ioregsel;
-        irqchip.chip.ioapic.id = ioapic.id;
-        irqchip.chip.ioapic.irr = ioapic.irr;
-        irqchip.chip.ioapic.pad = ioapic.pad;
-        for i in 0..24 {
-            irqchip.chip.ioapic.redirtbl[i].fields = ioapic.redirtbl[i];
-        }
-    }
-    vmfd.set_irqchip(&irqchip).ok();
-
-    let reader = BufReader::new(std::fs::File::open("/ssd/pic_master.json").unwrap());
-    let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
-    irqchip = kvm_irqchip {
-        chip_id: KVM_IRQCHIP_PIC_MASTER,
-        ..Default::default()
-    };
-    irqchip.chip.pic = pic;
-    vmfd.set_irqchip(&irqchip).ok();
-
-    let reader = BufReader::new(std::fs::File::open("/ssd/pic_slave.json").unwrap());
-    let pic: kvm_pic_state = serde_json::from_reader(reader).unwrap();
-    irqchip = kvm_irqchip {
-        chip_id: KVM_IRQCHIP_PIC_SLAVE,
-        ..Default::default()
-    };
-    irqchip.chip.pic = pic;
-    vmfd.set_irqchip(&irqchip).ok();
+    vmfd.get_irqchip(&mut irqchip)?;
+    unsafe { Ok(irqchip.chip.pic) }
 }
 
 /// A wrapper around creating and using a VM.
@@ -240,18 +206,62 @@ impl Vm {
         Ok(())
     }
 
+    fn setup_irqchip_from_file(&self, dir: &mut PathBuf) -> result::Result<(), io::Error> {
+        dir.push("ioapic.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let ioapic: IoapicState = serde_json::from_reader(reader)?;
+        let mut irqchip = kvm_irqchip {
+            chip_id: KVM_IRQCHIP_IOAPIC,
+            ..Default::default() 
+        };
+        unsafe {
+            irqchip.chip.ioapic.base_address = ioapic.base_address;
+            irqchip.chip.ioapic.ioregsel = ioapic.ioregsel;
+            irqchip.chip.ioapic.id = ioapic.id;
+            irqchip.chip.ioapic.irr = ioapic.irr;
+            irqchip.chip.ioapic.pad = ioapic.pad;
+            for i in 0..24 {
+                irqchip.chip.ioapic.redirtbl[i].fields = ioapic.redirtbl[i];
+            }
+        }
+        self.fd.set_irqchip(&irqchip)?;
+
+        dir.set_file_name("pic_master.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let pic: kvm_pic_state = serde_json::from_reader(reader)?;
+        irqchip = kvm_irqchip {
+            chip_id: KVM_IRQCHIP_PIC_MASTER,
+            ..Default::default()
+        };
+        irqchip.chip.pic = pic;
+        self.fd.set_irqchip(&irqchip)?;
+
+        dir.set_file_name("pic_slave.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let pic: kvm_pic_state = serde_json::from_reader(reader)?;
+        irqchip = kvm_irqchip {
+            chip_id: KVM_IRQCHIP_PIC_SLAVE,
+            ..Default::default()
+        };
+        irqchip.chip.pic = pic;
+        self.fd.set_irqchip(&irqchip)?;
+
+        dir.pop();
+        Ok(())
+    }
+
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
         &self,
         com_evt_1_3: &EventFd,
         com_evt_2_4: &EventFd,
         kbd_evt: &EventFd,
-        from_file: bool,
+        load_dir: &mut Option<PathBuf>,
     ) -> Result<()> {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
-        if from_file {
+        if let Some(dir) = load_dir {
             let start = now_monotime_us();
-            setup_irqchip_from_file(&self.fd);
+            self.setup_irqchip_from_file(dir).expect("Failed to restore irqchip");
             let end = now_monotime_us();
             println!("restoring irqchip took {}us", end-start);
         }
@@ -317,9 +327,9 @@ impl Vcpu {
         io_bus: devices::Bus,
         mmio_bus: devices::Bus,
         create_ts: TimestampUs,
+        load_dir: &mut Option<PathBuf>,
     ) -> Result<Self> {
-        let from_file = unsafe { super::FROM_FILE };
-        let kvm_vcpu = vm.fd.create_vcpu(id, from_file).map_err(Error::VcpuFd)?;
+        let kvm_vcpu = vm.fd.create_vcpu(id, load_dir.as_mut()).map_err(Error::VcpuFd)?;
         // Yue: added for Vcpu threads to access memory
         let guest_mem = vm.get_memory().unwrap().clone();
 
@@ -339,7 +349,7 @@ impl Vcpu {
         })
     }
 
-    fn write_msrs_to_file(&self) {
+    fn write_msrs_to_file(&self, dir: &mut PathBuf) -> result::Result<(), io::Error> {
         let entry_vec = arch::x86_64::regs::create_msr_entries();
         let vec_size_bytes =
             std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
@@ -354,17 +364,19 @@ impl Vcpu {
             entries.copy_from_slice(&entry_vec);
         }
         msrs.nmsrs = entry_vec.len() as u32;
-        self.fd.get_msrs(msrs).ok();
+        self.fd.get_msrs(msrs)?;
 
         unsafe {
             let entries: Vec<kvm_msr_entry> = msrs.entries.as_slice(entry_vec.len()).to_vec();
-            std::fs::write("/ssd/kvm_msrs.json", serde_json::to_string(&entries).unwrap()).ok();
+            dir.set_file_name("kvm_msrs.json");
+            std::fs::write(dir.as_path(), serde_json::to_string(&entries)?)
         }
     }
 
-    fn setup_msrs_from_file(&self) {
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_msrs.json").unwrap());
-        let entries: Vec<kvm_msr_entry> = serde_json::from_reader(reader).unwrap();
+    fn setup_msrs_from_file(&self, dir: &mut PathBuf) -> result::Result<(), std::io::Error> {
+        dir.set_file_name("kvm_msrs.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let entries: Vec<kvm_msr_entry> = serde_json::from_reader(reader)?;
 
         let vec_size_bytes =
             std::mem::size_of::<kvm_msrs>() + (entries.len() * std::mem::size_of::<kvm_msr_entry>());
@@ -378,88 +390,109 @@ impl Vcpu {
             msrs.entries.as_mut_slice(entries.len()).copy_from_slice(&entries);
         }
         msrs.nmsrs = entries.len() as u32;
-        self.fd.set_msrs(msrs).ok();
+        self.fd.set_msrs(msrs)
     }
 
-    fn setup_regs_from_file(&self) {
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_regs.json").unwrap());
-        let regs: kvm_regs = serde_json::from_reader(reader).unwrap();
-        self.fd.set_regs(&regs).ok();
+    fn setup_regs_from_file(&self, dir: &mut PathBuf) -> result::Result<(), io::Error> {
+        dir.push("kvm_regs.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let regs: kvm_regs = serde_json::from_reader(reader)?;
+        self.fd.set_regs(&regs)?;
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_xsave.json").unwrap());
-        let region_vec: Vec<u32> = serde_json::from_reader(reader).unwrap();
+        dir.set_file_name("kvm_xsave.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let region_vec: Vec<u32> = serde_json::from_reader(reader)?;
         let mut region = [0u32; 1024usize];
         for idx in 0..region.len() {
             region[idx] = region_vec[idx];
         }
         let xsave = kvm_xsave{ region };
-        self.fd.set_xsave(&xsave).ok();
-        //let reader = BufReader::new(std::fs::File::open("kvm_fpu.json").unwrap());
-        //let fpu: kvm_fpu = serde_json::from_reader(reader).unwrap();
-        //self.fd.set_fpu(&fpu).ok();
+        self.fd.set_xsave(&xsave)?;
         
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_xcrs.json").unwrap());
-        let xcrs: kvm_xcrs = serde_json::from_reader(reader).unwrap();
-        self.fd.set_xcrs(&xcrs).ok();
+        dir.set_file_name("kvm_xcrs.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let xcrs: kvm_xcrs = serde_json::from_reader(reader)?;
+        self.fd.set_xcrs(&xcrs)?;
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_sregs.json").unwrap());
-        let sregs: kvm_sregs = serde_json::from_reader(reader).unwrap();
-        self.fd.set_sregs(&sregs).ok();
+        dir.set_file_name("kvm_sregs.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let sregs: kvm_sregs = serde_json::from_reader(reader)?;
+        self.fd.set_sregs(&sregs)?;
 
-        self.setup_msrs_from_file();
+        self.setup_msrs_from_file(dir)?;
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_vcpu_events.json").unwrap());
-        let vcpu_events: kvm_vcpu_events = serde_json::from_reader(reader).unwrap();
-        self.fd.set_vcpu_events(&vcpu_events).ok();
+        dir.set_file_name("kvm_vcpu_events.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let vcpu_events: kvm_vcpu_events = serde_json::from_reader(reader)?;
+        self.fd.set_vcpu_events(&vcpu_events)?;
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_mp_state.json").unwrap());
-        let mp_state: kvm_mp_state = serde_json::from_reader(reader).unwrap();
-        self.fd.set_mp_state(&mp_state).ok();
+        dir.set_file_name("kvm_mp_state.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let mp_state: kvm_mp_state = serde_json::from_reader(reader)?;
+        self.fd.set_mp_state(&mp_state)?;
 
-        let reader = BufReader::new(std::fs::File::open("/ssd/kvm_lapic.json").unwrap());
-        let regs_vec: Vec<std::os::raw::c_char> = serde_json::from_reader(reader).unwrap();
+        dir.set_file_name("kvm_lapic.json");
+        let reader = BufReader::new(File::open(dir.as_path())?);
+        let regs_vec: Vec<std::os::raw::c_char> = serde_json::from_reader(reader)?;
         let mut regs = [0 as std::os::raw::c_char; 1024usize];
         for (idx, _) in regs_vec.iter().enumerate() {
             regs[idx] = regs_vec[idx];
         }
         let lapic = kvm_lapic_state { regs };
-        self.fd.set_lapic(&lapic).ok();
+        self.fd.set_lapic(&lapic)?;
+
+        dir.pop();
+        Ok(())
     }
 
-    fn write_regs_to_file(&self) {
-        let vcpu_events = self.fd.get_vcpu_events().unwrap();
-        std::fs::write("/ssd/kvm_vcpu_events.json", serde_json::to_string(&vcpu_events).unwrap()).ok();
+    fn write_regs_to_file(&self, dir: &mut PathBuf) -> result::Result<(), io::Error> {
+        let vcpu_events = self.fd.get_vcpu_events()?;
+        dir.push("kvm_vcpu_events.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&vcpu_events)?)?;
 
         let mp_state = self.fd.get_mp_state().unwrap();
-        std::fs::write("/ssd/kvm_mp_state.json", serde_json::to_string(&mp_state).unwrap()).ok();
+        dir.set_file_name("kvm_mp_state.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&mp_state)?)?;
 
         let regs = self.fd.get_regs().unwrap();
-        std::fs::write("/ssd/kvm_regs.json", serde_json::to_string(&regs).unwrap()).ok();
+        dir.set_file_name("kvm_regs.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&regs)?)?;
 
-        let xsave = self.fd.get_xsave().unwrap();
-        std::fs::write("/ssd/kvm_xsave.json", serde_json::to_string(&xsave.region.to_vec()).unwrap()).ok();
-        //let fpu = self.fd.get_fpu().unwrap();
-        //std::fs::write("kvm_fpu.json", serde_json::to_string(&fpu).unwrap()).ok();
+        let xsave = self.fd.get_xsave()?;
+        dir.set_file_name("kvm_xsave.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&xsave.region.to_vec())?)?;
 
-        let xcrs = self.fd.get_xcrs().unwrap();
-        std::fs::write("/ssd/kvm_xcrs.json", serde_json::to_string(&xcrs).unwrap()).ok();
+        let xcrs = self.fd.get_xcrs()?;
+        dir.set_file_name("kvm_xcrs.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&xcrs)?)?;
 
-        let sregs = self.fd.get_sregs().unwrap();
-        std::fs::write("/ssd/kvm_sregs.json", serde_json::to_string(&sregs).unwrap()).ok();
+        let sregs = self.fd.get_sregs()?;
+        dir.set_file_name("kvm_sregs.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&sregs)?)?;
 
-        self.write_msrs_to_file();
+        self.write_msrs_to_file(dir)?;
 
-        let lapic = self.fd.get_lapic().unwrap();
-        std::fs::write("/ssd/kvm_lapic.json", serde_json::to_string(&lapic.regs.to_vec()).unwrap()).ok();
+        let lapic = self.fd.get_lapic()?;
+        dir.set_file_name("kvm_lapic.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&lapic.regs.to_vec())?)?;
+
+        dir.pop();
+        Ok(())
     }
 
-    fn write_irqchip_to_file(&self) {
-        let ioapic = get_ioapic_state(&self._vmfd);
-        std::fs::write("/ssd/ioapic.json", serde_json::to_string(&ioapic).unwrap()).ok();
-        let pic = get_pic_state(&self._vmfd, true);
-        std::fs::write("/ssd/pic_master.json", serde_json::to_string(&pic).unwrap()).ok();
-        let pic = get_pic_state(&self._vmfd, false);
-        std::fs::write("/ssd/pic_slave.json", serde_json::to_string(&pic).unwrap()).ok();
+    fn write_irqchip_to_file(&self, dir: &mut PathBuf) -> result::Result<(), io::Error> {
+        let ioapic = get_ioapic_state(&self._vmfd)?;
+        dir.push("ioapic.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&ioapic)?)?;
+        let pic = get_pic_state(&self._vmfd, true)?;
+        dir.set_file_name("pic_master.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&pic)?)?;
+        let pic = get_pic_state(&self._vmfd, false)?;
+        dir.set_file_name("pic_slave.json");
+        std::fs::write(dir.as_path(), serde_json::to_string(&pic)?)?;
+
+        dir.pop();
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -475,7 +508,7 @@ impl Vcpu {
         machine_config: &VmConfig,
         kernel_start_addr: GuestAddress,
         vm: &Vm,
-        from_file: bool,
+        load_dir: &mut Option<PathBuf>,
     ) -> Result<()> {
         // the MachineConfiguration has defaults for ht_enabled and vcpu_count hence it is safe to unwrap
         filter_cpuid(
@@ -499,9 +532,9 @@ impl Vcpu {
             .set_cpuid2(&self.cpuid)
             .map_err(Error::SetSupportedCpusFailed)?;
 
-        if from_file {
+        if let Some(dir) = load_dir.as_mut() {
             let start = now_monotime_us();
-            self.setup_regs_from_file();
+            self.setup_regs_from_file(dir).expect("Failed to restore registers");
             let end = now_monotime_us();
             println!("loading registers took {}us", end-start);
         } else {
@@ -672,6 +705,8 @@ impl Vcpu {
     }
 
     fn run_emulation(&mut self,
+                     from_snapshot: bool,
+                     dump_dir: &mut Option<PathBuf>,
                      accessed: &mut Vec<BTreeSet<usize>>,
                      dirtied: &mut Vec<BTreeSet<usize>>,
                      read: &mut Vec<BTreeSet<usize>>) -> Result<()> {
@@ -711,7 +746,7 @@ impl Vcpu {
 
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
-                            if unsafe { super::FROM_FILE } {
+                            if from_snapshot {
                                 println!("App done. Shutting down...");
                                 return Err(Error::VcpuUnhandledKvmExit);
                             } else {
@@ -722,16 +757,21 @@ impl Vcpu {
                             println!("Init finished. #pages in memory is {}", pagemap.len());
                         } else if self.magic_port_cnt == 3 {
                             println!("Runtime is up. #pages in memory is {}", pagemap.len());
-                            if unsafe{ super::DUMP } {
-                                //unsafe { libc::sleep(30) };
+                            if let Some(dir) = dump_dir {
                                 println!("dumping states");
-                                self.write_regs_to_file();
-                                self.write_irqchip_to_file();
+                                self.write_regs_to_file(dir)?;
+                                self.write_irqchip_to_file(dir)?;
+                                dir.push("runtime_mem_dump");
                                 let mem_dump = std::fs::OpenOptions::new()
-                                    .write(true).truncate(true).create(true).open("/ssd/runtime_mem_dump").unwrap();
+                                    .write(true)
+                                    .truncate(true)
+                                    .create(true)
+                                    .open(dir.as_path())
+                                    .unwrap();
                                 let writer = &mut BufWriter::new(mem_dump);
-                                self.guest_mem.dump_init(writer).ok();
-                                self.fd.dump_kvm_run(self._vmfd.get_run_size());
+                                self.guest_mem.dump_init(writer).unwrap();
+                                dir.pop();
+                                self.fd.dump_kvm_run(self._vmfd.get_run_size(), dir);
                                 return Err(Error::VcpuUnhandledKvmExit);
                             }
                         } else {
@@ -866,6 +906,8 @@ impl Vcpu {
         thread_barrier: Arc<Barrier>,
         seccomp_level: u32,
         vcpu_exit_evt: EventFd,
+        mut dump_dir: Option<PathBuf>,
+        from_snapshot: bool,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -880,16 +922,6 @@ impl Vcpu {
         thread_barrier.wait();
 
         super::Vmm::log_boot_time(&self.create_ts);
-        //let my_pthread_t = unsafe { libc::pthread_self() };
-        //std::thread::Builder::new()
-        //    .name("kill_thread".to_string())
-        //    .spawn(move || {
-        //        const ONE_MILLI_TO_MICRO: u32 = 1000;
-        //        loop {
-        //            unsafe { libc::usleep(ONE_MILLI_TO_MICRO) };
-        //            unsafe { libc::pthread_kill(my_pthread_t, libc::SIGUSR1) };
-        //        }
-        //    }).err();
         std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("pages.log").ok();
         let pagemap = self.guest_mem.get_pagemap();
         let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
@@ -899,15 +931,13 @@ impl Vcpu {
         let mut accessed = Vec::new();
         let mut dirtied = Vec::new();
         let mut read = Vec::new();
-        //let ioapic = get_ioapic_state(&self._vmfd);
-        //std::fs::write("ioapic_initial.json", serde_json::to_string(&ioapic).unwrap()).ok();
-        //let pic = get_pic_state(&self._vmfd, true);
-        //std::fs::write("pic_master_initial.json", serde_json::to_string(&pic).unwrap()).ok();
-        //let pic = get_pic_state(&self._vmfd, false);
-        //std::fs::write("pic_slave_initial.json", serde_json::to_string(&pic).unwrap()).ok();
         println!("entering kvm_run");
         loop {
-            let ret = self.run_emulation(&mut accessed, &mut dirtied, &mut read);
+            let ret = self.run_emulation(from_snapshot,
+                                         &mut dump_dir,
+                                         &mut accessed,
+                                         &mut dirtied,
+                                         &mut read);
             if !ret.is_ok() {
                 match ret.err() {
                     _ => {

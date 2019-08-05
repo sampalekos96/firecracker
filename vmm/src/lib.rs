@@ -53,7 +53,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::{Read, BufReader};
+use std::io::BufReader;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -92,13 +92,6 @@ use vmm_config::net::{
 #[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
 use vstate::{Vcpu, Vm};
-
-/// from file
-pub static mut FROM_FILE: bool = false;
-/// dump machine states
-pub static mut DUMP: bool = false;
-/// snapshot on SSD
-pub static mut SSD: bool = false;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -631,6 +624,10 @@ struct Vmm {
 
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
+
+    // snapshot
+    load_dir: Option<PathBuf>,
+    dump_dir: Option<PathBuf>,
 }
 
 ///// kvm_irqchip that is serde-compatible
@@ -666,6 +663,9 @@ impl Vmm {
         let kvm = KvmContext::new()?;
         let vm = Vm::new(kvm.fd()).map_err(Error::Vm)?;
 
+        let load_dir = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
+        let dump_dir = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
+
         Ok(Vmm {
             kvm,
             vm_config: VmConfig::default(),
@@ -688,6 +688,8 @@ impl Vmm {
             from_api,
             write_metrics_event,
             seccomp_level,
+            load_dir,
+            dump_dir,
         })
     }
 
@@ -993,7 +995,7 @@ impl Vmm {
                 &self.legacy_device_manager.com_evt_1_3,
                 &self.legacy_device_manager.com_evt_2_4,
                 &self.legacy_device_manager.kbd_evt,
-                unsafe {FROM_FILE},
+                &mut self.load_dir,
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
         #[cfg(target_arch = "x86_64")]
@@ -1036,12 +1038,11 @@ impl Vmm {
         for cpu_id in 0..vcpu_count {
             let io_bus = self.legacy_device_manager.io_bus.clone();
             let mmio_bus = device_manager.bus.clone();
-            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
+            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone(), &mut self.load_dir)
                 .map_err(StartMicrovmError::Vcpu)?;
 
-            let from_file = unsafe { FROM_FILE };
             #[cfg(target_arch = "x86_64")]
-            vcpu.configure(&self.vm_config, entry_addr, &self.vm, from_file)
+            vcpu.configure(&self.vm_config, entry_addr, &self.vm, &mut self.load_dir)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
             vcpus.push(vcpu);
         }
@@ -1081,11 +1082,14 @@ impl Vmm {
             let mut vcpu = vcpus.pop().unwrap();
 
             let seccomp_level = self.seccomp_level;
+            let dump_dir = self.dump_dir.clone();
+            let from_snapshot = self.load_dir.is_some();
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt);
+                        vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt,
+                                 dump_dir, from_snapshot);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1189,7 +1193,7 @@ impl Vmm {
         Ok(())
     }
 
-    fn restore_mmio_device(&mut self, index: u64) {
+    fn restore_block_device(&mut self, index: u64) {
         //manually replay writes to mmio device
         let base = 0xd000_0000u64 + index*4096; // index: rootfs=0, appfs=1
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
@@ -1230,8 +1234,8 @@ impl Vmm {
         bus.write(base+0x38, &data);
         LittleEndian::write_u32(data.as_mut(), 1);
         bus.write(base+0x44, &data);
-        // at this step, the mmio device is activated and EpollHandler is sent to the epoll_context
-        // activation requires all queues in a valid state:
+        // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // Activation requires all queues in a valid state:
         //     1. must be marked as ready
         //     2. size must not be zero and cannot exceed max_size
         //     3. descriptor table/available ring/used ring must completely reside in guest memory
@@ -1239,8 +1243,13 @@ impl Vmm {
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
 
-        let reader = BufReader::new(std::fs::File::open(format!("/ssd/queues_{}.json", index)).unwrap());
-        let queues: Vec<devices::virtio::queue::Queue> = serde_json::from_reader(reader).unwrap();
+        let dir = self.load_dir.as_mut().unwrap();
+        let file_name = format!("blk_{}.json", index);
+        dir.push(file_name);
+        let reader = BufReader::new(std::fs::File::open(dir.as_path()).expect("Missing"));
+        let queues: Vec<devices::virtio::queue::Queue> =
+            serde_json::from_reader(reader).expect("Bad json file");
+        dir.pop();
         self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
     }
 
@@ -1277,24 +1286,28 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         let mut entry_addr = GuestAddress(0);
-        if unsafe { !FROM_FILE } {
+        if let Some(ref mut dir) = self.load_dir {
+            dir.push("runtime_mem_dump");
+            println!("{:?}", dir);
+            let t0 = now_monotime_us();
+            let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
+            let reader = &mut BufReader::new(mem_dump);
+            self.guest_memory.clone().unwrap().load_init(reader).expect("Failed to load memory dump");
+            dir.pop();
+            let t1 = now_monotime_us();
+            for i in 0..self.block_device_configs.config_list.len() {
+                self.restore_block_device(i as u64);
+            }
+            let t2 = now_monotime_us();
+            println!("restoring memory took {} ms", (t1-t0)/1000);
+            println!("restoring block devices took {} us", t2-t1);
+        } else {
             entry_addr = self
                 .load_kernel()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
             self.configure_system()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        } else {
-            let t0 = now_monotime_us();
-            self.restore_mmio_device(0);
-            self.restore_mmio_device(1);
-            let t1 = now_monotime_us();
-            let mem_dump = File::open("/ssd/runtime_mem_dump").unwrap();
-            let reader = &mut BufReader::new(mem_dump);
-            self.guest_memory.clone().unwrap().load_init(reader).ok();
-            let t2 = now_monotime_us();
-            println!("restoring mmio devices took {} us", t1-t0);
-            println!("restoring memory took {} ms", (t2-t1)/1000);
         }
 
         self.register_events()
@@ -1389,7 +1402,7 @@ impl Vmm {
         let mut events = vec![epoll::Event::new(epoll::Events::empty(), 0); EPOLL_EVENTS_LEN];
 
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
-        let mut exit = false;
+        let mut exit_on_dump = false;
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
@@ -1406,11 +1419,10 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-                            if unsafe { !DUMP } {
+                            if self.dump_dir.is_none() {
                                 self.stop(i32::from(FC_EXIT_CODE_OK));
                             } else {
-                                println!("about to exit");
-                                exit = true;
+                                exit_on_dump = true;
                             }
                         }
                         EpollDispatch::Stdin => {
@@ -1456,9 +1468,6 @@ impl Vmm {
                                         }
                                         _ => (),
                                     }
-                                    //if unsafe { DUMP } {
-                                    //    println!("io to mmio device done");
-                                    //}
                                 }
                                 Err(e) => {
                                     warn!("invalid handler for device {}: {:?}", device_idx, e)
@@ -1482,13 +1491,17 @@ impl Vmm {
                     }
                 }
             }
-            if exit {
-                let queues = self.epoll_context.get_device_handler(0).unwrap().get_queues();
-                std::fs::write("/ssd/queues_0.json",
-                                serde_json::to_string(&queues).unwrap()).ok();
-                let queues = self.epoll_context.get_device_handler(1).unwrap().get_queues();
-                std::fs::write("/ssd/queues_1.json",
-                                serde_json::to_string(&queues).unwrap()).ok();
+            if exit_on_dump {
+                let dir = self.dump_dir.as_mut().unwrap();
+                for i in 0..self.block_device_configs.config_list.len() {
+                    let filename = format!("blk_{}.json", i);
+                    let queues = self.epoll_context.get_device_handler(i).unwrap().get_queues();
+                    dir.push(filename);
+                    std::fs::write(dir.as_path(),
+                        serde_json::to_string(&queues).unwrap())
+                        .expect(format!("Failed to write down block device {}'s queue state", i).as_str());
+                    dir.pop();
+                }
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
         }

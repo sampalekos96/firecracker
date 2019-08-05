@@ -36,6 +36,10 @@ pub struct InstanceInfo {
     pub id: String,
     /// The state of the microVM.
     pub state: InstanceState,
+    /// The directory contains the snapshot
+    pub load_dir: Option<std::path::PathBuf>,
+    /// The directory contains the snapshot
+    pub dump_dir: Option<std::path::PathBuf>,
     /// The version of the VMM that runs the microVM.
     pub vmm_version: String,
 }

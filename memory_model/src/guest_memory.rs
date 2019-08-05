@@ -300,7 +300,7 @@ impl GuestMemory {
         // the loop should break out upon UnexpectedEof when the end is reached
         while reader.read_exact(buf).is_ok() {
             let gpfn = usize::from_le_bytes(*buf);
-            reader.read_exact(buf).unwrap();
+            reader.read_exact(buf).map_err(|e| Error::IoError(e))?;
             let cnt = usize::from_le_bytes(*buf);
             self.read_to_memory(GuestAddress(gpfn * page_size), reader, cnt * page_size)?;
         }
