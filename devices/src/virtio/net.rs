@@ -499,10 +499,12 @@ impl NetEpollHandler {
 
 impl EpollHandler for NetEpollHandler {
     fn set_queues(&mut self, _other: &Vec<Queue>) {
+	// TODO: incomplete implementation
     }
 
     fn get_queues(&self) -> Vec<Queue> {
-        Vec::new()
+	// TODO: incomplete implementation
+	Vec::new()
     }
 
     fn handle_event(
