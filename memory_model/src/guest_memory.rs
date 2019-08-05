@@ -146,13 +146,15 @@ impl GuestMemory {
         self.regions.len()
     }
 
+    // Helper function
     fn get_pfn(num: u64) -> u64 {
         num & 0x7FFFFFFFFFFFFF
     }
 
-    /// return a mapping from guest physical page numbers to host physical page numbers
-    /// for the given virtual address range
-    fn read_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
+    // Helper function to `pub fn get_pagemap()`
+    // return a mapping from guest physical page numbers to host physical page numbers
+    // for the given virtual address range
+    fn get_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
     -> BTreeMap<u64, usize> {
         const PM_ENTRY_SIZE:u64 = 8;
         let path = format!("/proc/{}/pagemap", std::process::id());
@@ -183,7 +185,7 @@ impl GuestMemory {
         let mut page_i_base = 0 as usize;
         for region in self.regions.iter() {
             pfns.append(
-                &mut GuestMemory::read_pagemap_addr_range(page_i_base,
+                &mut GuestMemory::get_pagemap_addr_range(page_i_base,
                                                           page_size,
                                                           region.mapping.as_ptr() as u64,
                                                           region.mapping.size() as u64)
@@ -193,12 +195,11 @@ impl GuestMemory {
         pfns
     }
 
-    /// Write all initialized guest memory pages to the provided writer
-    /// Here being initialized means being present in physical RAM
+    /// Write all initialized guest memory pages to the provided writer.
+    /// Here being initialized means being present in physical RAM.
     /// The byte stream being written out consists of a sequence of
-    /// guest physical frame (i.e. page) number (gpfn) in little endian (8 Bytes)
-    /// immediately followed by the corresponding guest page (4096 Bytes)
-    pub fn dump_init<F>(&self, writer: &mut F) -> Result<()>
+    /// (start page's gpfn, region size, region content)
+    pub fn dump_initialized_memory<F>(&self, writer: &mut F) -> Result<()>
     where
         F: Write,
     {
@@ -235,7 +236,7 @@ impl GuestMemory {
     }
 
     /// read from the provided memory dump file into guest memory
-    pub fn load_init<F>(&self, reader: &mut F) -> Result<()>
+    pub fn load_initialized_memory<F>(&self, reader: &mut F) -> Result<()>
     where
         F: Read,
     {

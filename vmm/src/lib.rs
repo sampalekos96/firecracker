@@ -1278,7 +1278,8 @@ impl Vmm {
             let t0 = now_monotime_us();
             let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
             let reader = &mut BufReader::new(mem_dump);
-            self.guest_memory.clone().unwrap().load_init(reader).expect("Failed to load memory dump");
+            self.guest_memory.clone().unwrap().load_initialized_memory(reader)
+                .expect("Failed to load memory dump");
             dir.pop();
             let t1 = now_monotime_us();
             for i in 0..self.block_device_configs.config_list.len() {

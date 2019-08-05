@@ -746,7 +746,7 @@ impl Vcpu {
                                     .open(dir.as_path())
                                     .unwrap();
                                 let writer = &mut BufWriter::new(mem_dump);
-                                self.guest_mem.dump_init(writer).unwrap();
+                                self.guest_mem.dump_initialized_memory(writer).unwrap();
                                 dir.pop();
                                 return Err(Error::VcpuUnhandledKvmExit);
                             }
