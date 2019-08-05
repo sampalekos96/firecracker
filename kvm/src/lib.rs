@@ -14,14 +14,12 @@ extern crate libc;
 extern crate kvm_bindings;
 #[macro_use]
 extern crate sys_util;
-extern crate fc_util;
 
 mod cap;
 mod ioctl_defs;
 
 use std::fs::File;
 use std::io;
-use std::io::{Read, Write};
 use std::mem::size_of;
 use std::os::raw::*;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
@@ -35,7 +33,6 @@ use sys_util::EventFd;
 use sys_util::{
     ioctl, ioctl_with_mut_ptr, ioctl_with_mut_ref, ioctl_with_ptr, ioctl_with_ref, ioctl_with_val,
 };
-use fc_util::now_monotime_us;
 
 /// Wrapper over possible Kvm method Result.
 pub type Result<T> = result::Result<T, io::Error>;
@@ -577,7 +574,7 @@ impl VmFd {
     /// # Errors
     /// Returns an error when the VM fd is invalid or the VCPU memory cannot be mapped correctly.
     ///
-    pub fn create_vcpu(&self, id: u8, load_dir: Option<&mut std::path::PathBuf>) -> Result<VcpuFd> {
+    pub fn create_vcpu(&self, id: u8) -> Result<VcpuFd> {
         // Safe because we know that vm is a VM fd and we verify the return result.
         #[allow(clippy::cast_lossless)]
         let vcpu_fd = unsafe { ioctl_with_val(&self.vm, KVM_CREATE_VCPU(), id as c_ulong) };
@@ -590,21 +587,6 @@ impl VmFd {
         let vcpu = unsafe { File::from_raw_fd(vcpu_fd) };
 
         let kvm_run_ptr = KvmRunWrapper::from_fd(&vcpu, self.run_size)?;
-
-        // fill the kvm_run from the kvm_run_dump file
-        //if let Some(dir) = load_dir {
-        //    let start = now_monotime_us();
-        //    dir.push("kvm_run_dump");
-        //    let mut ifile = std::fs::File::open(dir.as_path())?;
-        //    dir.pop();
-        //    let mut buf = vec![0u8; self.run_size];
-        //    ifile.read_exact(buf.as_mut_slice())?;
-        //    let mut slice:&mut [u8] = unsafe { std::slice::from_raw_parts_mut(
-        //           kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, self.run_size) };
-        //    slice.write(buf.as_slice())?;
-        //    let end = now_monotime_us();
-        //    println!("loading kvm_run took {}us", end-start);
-        //}
 
         Ok(VcpuFd { vcpu, kvm_run_ptr })
     }
@@ -693,19 +675,6 @@ pub struct VcpuFd {
 }
 
 impl VcpuFd {
-    /// Dump kvm_run
-    pub fn dump_kvm_run(&self, run_size: usize, dir: &mut std::path::PathBuf) {
-        dir.push("kvm_run_dump");
-        let mut ofile = std::fs::OpenOptions::new()
-            .write(true).truncate(true).create(true).open(dir.as_path()).unwrap();
-        dir.pop();
-
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(
-                self.kvm_run_ptr.as_mut_ref() as *mut kvm_run as *mut u8, run_size) };
-        let mut buf = vec![0u8; run_size];
-        buf.as_mut_slice().write(slice).ok();
-        ofile.write_all(buf.as_slice()).ok();
-    }
     /// KVM_GET_XSAVE
     pub fn get_xsave(&self) -> Result<kvm_xsave> {
         let mut xsave = kvm_xsave::default(); 

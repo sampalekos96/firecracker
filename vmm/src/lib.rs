@@ -1038,7 +1038,7 @@ impl Vmm {
         for cpu_id in 0..vcpu_count {
             let io_bus = self.legacy_device_manager.io_bus.clone();
             let mmio_bus = device_manager.bus.clone();
-            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone(), &mut self.load_dir)
+            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
 
             #[cfg(target_arch = "x86_64")]

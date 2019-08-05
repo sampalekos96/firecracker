@@ -8,7 +8,6 @@ libc = ">=0.2.39"
 
 kvm-bindings = { path = "../../kvm-bindings" }
 sys_util = { path = "../sys_util" }
-fc_util = { path = "../fc_util" }
 
 [dev-dependencies]
 byteorder = ">=1.2.1"

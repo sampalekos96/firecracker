@@ -327,9 +327,8 @@ impl Vcpu {
         io_bus: devices::Bus,
         mmio_bus: devices::Bus,
         create_ts: TimestampUs,
-        load_dir: &mut Option<PathBuf>,
     ) -> Result<Self> {
-        let kvm_vcpu = vm.fd.create_vcpu(id, load_dir.as_mut()).map_err(Error::VcpuFd)?;
+        let kvm_vcpu = vm.fd.create_vcpu(id).map_err(Error::VcpuFd)?;
         // Yue: added for Vcpu threads to access memory
         let guest_mem = vm.get_memory().unwrap().clone();
 
@@ -753,7 +752,6 @@ impl Vcpu {
                                 let writer = &mut BufWriter::new(mem_dump);
                                 self.guest_mem.dump_init(writer).unwrap();
                                 dir.pop();
-                                self.fd.dump_kvm_run(self._vmfd.get_run_size(), dir);
                                 return Err(Error::VcpuUnhandledKvmExit);
                             }
                         } else {
