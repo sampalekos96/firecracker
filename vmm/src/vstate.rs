@@ -578,7 +578,7 @@ impl Vcpu {
     }
 
     // Get the list of indexes where bits are set in the number's binary representation
-    fn list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
+    fn _list_set_bits(num_pages: usize, offset: usize, num: u64) -> BTreeSet<usize> {
         let mut mask: u64 = 1;
         let mut res: BTreeSet<usize> = BTreeSet::new();
         for index in 0..64 as usize {
@@ -593,7 +593,7 @@ impl Vcpu {
     // Get the list of dirty pages since the last call to this function.
     // Because this is used for metrics, it swallows most errors and simply returns empty set
     // if the KVM operation fails.
-    fn get_dirty_page_list(&self) -> BTreeSet<usize> {
+    fn _get_dirty_page_list(&self) -> BTreeSet<usize> {
         let mut num_pages: usize = 0;
         let dirty_pages = self.guest_mem.map_and_fold(
             BTreeSet::new(),
@@ -606,7 +606,7 @@ impl Vcpu {
                         let union = v
                             .iter()
                             .enumerate()
-                            .map(|(offset, page)| Vcpu::list_set_bits(num_pages, offset, *page))
+                            .map(|(offset, page)| Vcpu::_list_set_bits(num_pages, offset, *page))
                             .fold(BTreeSet::new(),
                                   |init, page_list| init.union(&page_list).cloned().collect());
                         num_pages += memory_region.size()/(4<<10);
@@ -622,7 +622,7 @@ impl Vcpu {
     }
 
     /// set all pfns in pagemap to idle
-    fn clear_accessed_log(sorted_pfns: &Vec<u64>) {
+    fn _clear_accessed_log(sorted_pfns: &Vec<u64>) {
         let path = "/sys/kernel/mm/page_idle/bitmap";
         let mut idle_log = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
 
@@ -634,7 +634,7 @@ impl Vcpu {
         idle_log.write_all(&buf).err();
     }
 
-    fn read_accessed_log(pagemap: &BTreeMap<u64, usize>, sorted_pfns: &Vec<u64>) -> BTreeSet<usize> {
+    fn _read_accessed_log(pagemap: &BTreeMap<u64, usize>, sorted_pfns: &Vec<u64>) -> BTreeSet<usize> {
         // open the bitmap file
         let path = "/sys/kernel/mm/page_idle/bitmap";
         let mut idle_log = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
@@ -671,17 +671,17 @@ impl Vcpu {
         accessed_list
     }
 
-    fn get_and_clear_accessed_log(&self, pagemap: &BTreeMap<u64, usize>) -> BTreeSet<usize> {
+    fn _get_and_clear_accessed_log(&self, pagemap: &BTreeMap<u64, usize>) -> BTreeSet<usize> {
         let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
 
-        let ret = Vcpu::read_accessed_log(&pagemap, &sorted_pfns);
+        let ret = Vcpu::_read_accessed_log(&pagemap, &sorted_pfns);
         if sorted_pfns.len() > 0 {
-            Vcpu::clear_accessed_log(&sorted_pfns);
+            Vcpu::_clear_accessed_log(&sorted_pfns);
         }
         ret
     }
 
-    fn calculate_intersection(sets: &Vec<BTreeSet<usize>>) -> Vec<Vec<BTreeSet<usize>>> {
+    fn _calculate_intersection(sets: &Vec<BTreeSet<usize>>) -> Vec<Vec<BTreeSet<usize>>> {
         let mut unioned_setup: BTreeSet<usize>;
         let mut unioned_app: BTreeSet<usize>;
         let mut unions: Vec<Vec<BTreeSet<usize>>> = Vec::new();
@@ -704,12 +704,7 @@ impl Vcpu {
         unions
     }
 
-    fn run_emulation(&mut self,
-                     from_snapshot: bool,
-                     dump_dir: &mut Option<PathBuf>,
-                     accessed: &mut Vec<BTreeSet<usize>>,
-                     dirtied: &mut Vec<BTreeSet<usize>>,
-                     read: &mut Vec<BTreeSet<usize>>) -> Result<()> {
+    fn run_emulation(&mut self, from_snapshot: bool, dump_dir: &mut Option<PathBuf>) -> Result<()> {
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -731,19 +726,6 @@ impl Vcpu {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
                     {
-                        let pagemap = self.guest_mem.get_pagemap();
-                        let accessed_pages = self.get_and_clear_accessed_log(&pagemap);
-                        let dirtied_pages = self.get_dirty_page_list();
-                        let mut log = std::fs::OpenOptions::new().append(true).open("pages.log").unwrap();
-                        write!(log, "{},{},{},{}\n",
-                              pagemap.len(),
-                              accessed_pages.len(),
-                              dirtied_pages.len(),
-                              accessed_pages.difference(&dirtied_pages).collect::<BTreeSet<_>>().len()).ok();
-                        read.push(accessed_pages.difference(&dirtied_pages).cloned().collect());
-                        accessed.push(accessed_pages);
-                        dirtied.push(dirtied_pages);
-
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             if from_snapshot {
@@ -751,12 +733,12 @@ impl Vcpu {
                                 return Err(Error::VcpuUnhandledKvmExit);
                             } else {
                                 super::Vmm::log_boot_time(&self.create_ts);
-                                println!("Received BOOT COMPLETE signal. #pages in memory is {}", pagemap.len());
+                                println!("Boot done.");
                             }
                         } else if self.magic_port_cnt == 2 {
-                            println!("Init finished. #pages in memory is {}", pagemap.len());
+                            println!("Init done.");
                         } else if self.magic_port_cnt == 3 {
-                            println!("Runtime is up. #pages in memory is {}", pagemap.len());
+                            println!("Runtime is up.");
                             if let Some(dir) = dump_dir {
                                 println!("dumping states");
                                 self.write_regs_to_file(dir)?;
@@ -775,35 +757,8 @@ impl Vcpu {
                                 return Err(Error::VcpuUnhandledKvmExit);
                             }
                         } else {
-                            println!("App done. #pages in memory is {}", pagemap.len());
-                            //write!(log, "{},{}\n",
-                            //       dirtied[3].intersection(&dirtied[4]).collect::<BTreeSet<_>>().len(),
-                            //       dirtied[3].intersection(&read[4]).collect::<BTreeSet<_>>().len()).ok();
-                            // the end of the application, we do the set intersections and exit
-                            //let accessed_intersect = Vcpu::calculate_intersection(&accessed);
-                            //let dirtied_intersect = Vcpu::calculate_intersection(&dirtied);
-                            //let read_intersect = Vcpu::calculate_intersection(&read);
-                            //for i in 0..accessed_intersect.len() {
-                            //    write!(log, "{},{},{}\n",
-                            //           accessed_intersect[i].len(),
-                            //           dirtied_intersect[i].len(),
-                            //           read_intersect[i].len()).ok();
-                            //}
-                            //for tuple in accessed_intersect.iter() {
-                            //    write!(log, "{},{},{}\n",
-                            //           tuple[0].len(),
-                            //           tuple[2].len(),
-                            //           tuple[1].len()).ok();
-                            //}
-                            //for i in 0..accessed_intersect.len() {
-                            //    write!(log, "{},{},{}\n",
-                            //           dirtied_intersect[i][0].len(),
-                            //           accessed_intersect[i][1].len(),
-                            //           dirtied_intersect[i][0]
-                            //            .intersection(&accessed_intersect[i][1])
-                            //            .collect::<BTreeSet<_>>().len()).ok();
-                            //}
-                            return Err(Error::VcpuUnhandledKvmExit)
+                            println!("App done. Shutting down...");
+                            return Err(Error::VcpuUnhandledKvmExit);
                         }
                     }
 
@@ -817,23 +772,9 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::MmioWrite(addr, data) => {
-                    // BOOT COMPLETE and addr is not in reserved memory region
-                    if self.magic_port_cnt > 0 && addr < arch::get_reserved_mem_addr() as u64 {
-                        info!("Received KVM_EXIT_MMIO_WRITE signal at address 0x{:x?} with {} B data",
-                            addr, data.len());
-                        let guest_addr = GuestAddress(addr as usize);
-                        info!("Calling write_slice_at_addr");
-                        self.guest_mem.write_slice_at_addr(data, guest_addr)
-                            .map_err(|e| Error::GuestMemory(e))?;
-                        info!("write_slice_at_addr succeeded");
-                        Ok(())
-                        //self.set_page_writable(addr)
-                    }
-                    else {
-                        self.mmio_bus.write(addr, data);
-                        METRICS.vcpu.exit_mmio_write.inc();
-                        Ok(())
-                    }
+                    self.mmio_bus.write(addr, data);
+                    METRICS.vcpu.exit_mmio_write.inc();
+                    Ok(())
                 }
                 VcpuExit::Hlt => {
                     info!("Received KVM_EXIT_HLT signal");
@@ -869,21 +810,7 @@ impl Vcpu {
                 match e.raw_os_error().unwrap() {
                     // Why do we check for these if we only return EINVAL?
                     libc::EAGAIN => Ok(()),
-                    libc::EINTR => {
-                        let pagemap = self.guest_mem.get_pagemap();
-                        let accessed_pages = self.get_and_clear_accessed_log(&pagemap);
-                        let dirtied_pages = self.get_dirty_page_list();
-                        // #pages present, #pages accessed, #pages dirtied, #pages only read
-                        info!("{},{},{},{}",
-                              pagemap.len(),
-                              accessed_pages.len(),
-                              dirtied_pages.len(),
-                              accessed_pages.difference(&dirtied_pages).collect::<BTreeSet<_>>().len());
-                        Ok(())
-                    },
-                    //libc::EFAULT => {
-                    //    info!("Bad Address");
-                    //},
+                    libc::EFAULT => Ok(()),
                     _ => {
                         METRICS.vcpu.failures.inc();
                         error!("Failure during vcpu run: {}", e);
@@ -921,23 +848,12 @@ impl Vcpu {
 
         thread_barrier.wait();
 
-        super::Vmm::log_boot_time(&self.create_ts);
-        std::fs::OpenOptions::new().create(true).write(true).truncate(true).open("pages.log").ok();
-        let pagemap = self.guest_mem.get_pagemap();
-        let sorted_pfns: Vec<u64> = pagemap.keys().cloned().collect();
-        if sorted_pfns.len() > 0 {
-            Vcpu::clear_accessed_log(&sorted_pfns);
+        if from_snapshot {
+            super::Vmm::log_boot_time(&self.create_ts);
         }
-        let mut accessed = Vec::new();
-        let mut dirtied = Vec::new();
-        let mut read = Vec::new();
         println!("entering kvm_run");
         loop {
-            let ret = self.run_emulation(from_snapshot,
-                                         &mut dump_dir,
-                                         &mut accessed,
-                                         &mut dirtied,
-                                         &mut read);
+            let ret = self.run_emulation(from_snapshot, &mut dump_dir);
             if !ret.is_ok() {
                 match ret.err() {
                     _ => {
