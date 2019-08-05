@@ -214,7 +214,6 @@ impl GuestMemory {
                 && gpfns[test] * page_size < region_end(&self.regions[ri]).offset() {
                 test += 1;
             }
-            println!("start {} size {}", gpfns[start], test-start);
             writer.write_all(&gpfns[start].to_le_bytes()).map_err(|e| Error::IoError(e))?;
             writer.write_all(&(test-start).to_le_bytes()).map_err(|e| Error::IoError(e))?;
             // write page content

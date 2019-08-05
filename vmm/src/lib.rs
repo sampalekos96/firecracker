@@ -556,7 +556,6 @@ impl EpollContext {
         match maybe.handler {
             Some(ref mut v) => Ok(v.as_mut()),
             None => {
-                println!("get the handler of the device at {}", device_idx);
                 // This should only be called in response to an epoll trigger.
                 // Moreover, this branch of the match should only be active on the first call
                 // (the first epoll event for this device), therefore the channel is guaranteed
@@ -1276,7 +1275,6 @@ impl Vmm {
         let mut entry_addr = GuestAddress(0);
         if let Some(ref mut dir) = self.load_dir {
             dir.push("runtime_mem_dump");
-            println!("{:?}", dir);
             let t0 = now_monotime_us();
             let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
             let reader = &mut BufReader::new(mem_dump);
@@ -1287,8 +1285,8 @@ impl Vmm {
                 self.restore_block_device(i as u64);
             }
             let t2 = now_monotime_us();
-            println!("restoring memory took {} ms", (t1-t0)/1000);
-            println!("restoring block devices took {} us", t2-t1);
+            info!("restoring memory took {} ms", (t1-t0)/1000);
+            info!("restoring block devices took {} us", t2-t1);
         } else {
             entry_addr = self
                 .load_kernel()

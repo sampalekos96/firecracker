@@ -180,13 +180,11 @@ impl Vm {
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
-            //let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
-            //    KVM_MEM_LOG_DIRTY_PAGES
-            //} else {
-            //    0
-            //};
-            // Force dirty page logging
-            let flags = KVM_MEM_LOG_DIRTY_PAGES;
+            let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
+                KVM_MEM_LOG_DIRTY_PAGES
+            } else {
+                0
+            };
             let memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
                 guest_phys_addr: guest_addr.offset() as u64,
@@ -263,7 +261,7 @@ impl Vm {
             let start = now_monotime_us();
             self.setup_irqchip_from_file(dir).expect("Failed to restore irqchip");
             let end = now_monotime_us();
-            println!("restoring irqchip took {}us", end-start);
+            info!("restoring irqchip took {}us", end-start);
         }
 
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
@@ -535,7 +533,7 @@ impl Vcpu {
             let start = now_monotime_us();
             self.setup_regs_from_file(dir).expect("Failed to restore registers");
             let end = now_monotime_us();
-            println!("loading registers took {}us", end-start);
+            info!("loading registers took {}us", end-start);
         } else {
             arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
             // Safe to unwrap because this method is called after the VM is configured
@@ -644,7 +642,6 @@ impl Vcpu {
         idle_log.seek(SeekFrom::Start(seek_offset)).err();
         // decide number of bytes to read
         let buf_size: usize = 8 * (1 + sorted_pfns[sorted_pfns.len()-1] / 64 - sorted_pfns[0] / 64) as usize;
-        //println!("smallest pfn = {} largest pfn = {}", sorted_pfns[0], sorted_pfns[sorted_pfns.len()-1]);
         let mut buf = vec![0 as u8; buf_size];
         idle_log.read_exact(&mut buf).err();
 
@@ -714,7 +711,7 @@ impl Vcpu {
                 VcpuExit::IoOut(addr, data) => {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 124 {
                         self.magic_124_cnt += 1;
-                        println!("magic port value 124 count {}", self.magic_124_cnt);
+                        info!("magic port value 124 count {}", self.magic_124_cnt);
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
                         panic!("mounting app file system failed");
@@ -728,18 +725,17 @@ impl Vcpu {
                         self.magic_port_cnt += 1;
                         if self.magic_port_cnt == 1 {
                             if from_snapshot {
-                                println!("App done. Shutting down...");
+                                info!("App done. Shutting down...");
                                 return Err(Error::VcpuUnhandledKvmExit);
                             } else {
                                 super::Vmm::log_boot_time(&self.create_ts);
-                                println!("Boot done.");
+                                info!("Boot done.");
                             }
                         } else if self.magic_port_cnt == 2 {
-                            println!("Init done.");
+                            info!("Init done.");
                         } else if self.magic_port_cnt == 3 {
-                            println!("Runtime is up.");
+                            info!("Runtime is up.");
                             if let Some(dir) = dump_dir {
-                                println!("dumping states");
                                 self.write_regs_to_file(dir)?;
                                 self.write_irqchip_to_file(dir)?;
                                 dir.push("runtime_mem_dump");
@@ -755,7 +751,7 @@ impl Vcpu {
                                 return Err(Error::VcpuUnhandledKvmExit);
                             }
                         } else {
-                            println!("App done. Shutting down...");
+                            info!("App done. Shutting down...");
                             return Err(Error::VcpuUnhandledKvmExit);
                         }
                     }
@@ -849,7 +845,6 @@ impl Vcpu {
         if from_snapshot {
             super::Vmm::log_boot_time(&self.create_ts);
         }
-        println!("entering kvm_run");
         loop {
             let ret = self.run_emulation(from_snapshot, &mut dump_dir);
             if !ret.is_ok() {

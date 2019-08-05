@@ -245,21 +245,18 @@ impl Request {
 
         match self.request_type {
             RequestType::In => {
-                //println!("read to memory {}", self.data_len);
                 mem.read_to_memory(self.data_addr, disk, self.data_len as usize)
                     .map_err(ExecuteError::Read)?;
                 METRICS.block.read_count.add(self.data_len as usize);
                 return Ok(self.data_len);
             }
             RequestType::Out => {
-                //println!("write from memory at 0x{:x} {} Bytes to disk sector {}", self.data_addr.offset(), self.data_len, self.sector);
                 mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
                     .map_err(ExecuteError::Write)?;
                 METRICS.block.write_count.add(self.data_len as usize);
             }
-            RequestType::Flush =>  match disk.flush() {
+            RequestType::Flush => match disk.flush() {
                 Ok(_) => {
-                    //println!("flush");
                     METRICS.block.flush_count.inc();
                     return Ok(0);
                 }
@@ -609,7 +606,6 @@ impl VirtioDevice for Block {
         queues: Vec<Queue>,
         mut queue_evts: Vec<EventFd>,
     ) -> ActivateResult {
-        println!("activating block device");
         if queues.len() != NUM_QUEUES || queue_evts.len() != NUM_QUEUES {
             error!(
                 "Cannot perform activate. Expected {} queue(s), got {}",

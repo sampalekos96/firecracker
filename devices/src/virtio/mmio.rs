@@ -210,7 +210,6 @@ impl MmioDevice {
     /// the device before attempting to re-initialize.
     fn update_driver_status(&mut self, v: u32) {
         // match changed bits
-        println!("write: driver status {}", v);
         match !self.driver_status & v {
             DEVICE_ACKNOWLEDGE if self.driver_status == DEVICE_INIT => {
                 self.driver_status = v;
@@ -281,50 +280,22 @@ impl BusDevice for MmioDevice {
         match offset {
             0x00...0xff if data.len() == 4 => {
                 let v = match offset {
-                    0x0 => {
-                        println!("read MMIO_MAGIC_VALUE={}", MMIO_MAGIC_VALUE);
-                        MMIO_MAGIC_VALUE
-                    },
-                    0x04 => {
-                        println!("read MMIO_VERSION={}", MMIO_VERSION);
-                        MMIO_VERSION
-                    },
-                    0x08 => {
-                        println!("read MMIO device type={}", self.device.device_type());
-                        self.device.device_type()
-                    },
-                    0x0c => {
-                        println!("read VENDOR_ID={}", VENDOR_ID);
-                        VENDOR_ID
-                    }, // vendor id
+                    0x0 => MMIO_MAGIC_VALUE,
+                    0x04 => MMIO_VERSION,
+                    0x08 => self.device.device_type(),
+                    0x0c => VENDOR_ID, // vendor id
                     0x10 => {
                         let mut features = self.device.features(self.features_select);
                         if self.features_select == 1 {
                             features |= 0x1; // enable support of VirtIO Version 1
                         }
-                        println!("read device features={}", features);
                         features
                     }
-                    0x34 => {
-                        println!("read queue capacity={}", self.with_queue(0, |q| u32::from(q.get_max_size())));
-                        self.with_queue(0, |q| u32::from(q.get_max_size()))
-                    },
-                    0x44 => {
-                        println!("read if queue is ready {}", self.with_queue(0, |q| q.ready as u32));
-                        self.with_queue(0, |q| q.ready as u32)
-                    },
-                    0x60 => {
-                        //println!("read interrupt_status={}", self.interrupt_status.load(Ordering::SeqCst));
-                        self.interrupt_status.load(Ordering::SeqCst) as u32
-                    },
-                    0x70 => {
-                        println!("read driver_status={}", self.driver_status);
-                        self.driver_status
-                    },
-                    0xfc => {
-                        println!("read config_generation={}", self.config_generation);
-                        self.config_generation
-                    },
+                    0x34 => self.with_queue(0, |q| u32::from(q.get_max_size())),
+                    0x44 => self.with_queue(0, |q| q.ready as u32),
+                    0x60 => self.interrupt_status.load(Ordering::SeqCst) as u32,
+                    0x70 => self.driver_status,
+                    0xfc => self.config_generation,
                     _ => {
                         warn!("unknown virtio mmio register read: 0x{:x}", offset);
                         return;
@@ -332,10 +303,7 @@ impl BusDevice for MmioDevice {
                 };
                 LittleEndian::write_u32(data, v);
             }
-            0x100...0xfff => {
-                println!("read_config");
-                self.device.read_config(offset - 0x100, data)
-            },
+            0x100...0xfff => self.device.read_config(offset - 0x100, data),
             _ => {
                 warn!(
                     "invalid virtio mmio read: 0x{:x}:0x{:x}",
@@ -359,16 +327,12 @@ impl BusDevice for MmioDevice {
             0x00...0xff if data.len() == 4 => {
                 let v = LittleEndian::read_u32(data);
                 match offset {
-                    0x14 => {
-                        println!("write: features_select {}", v);
-                        self.features_select = v
-                    },
+                    0x14 => self.features_select = v,
                     0x20 => {
                         if self
                             .check_driver_status(DEVICE_DRIVER, DEVICE_FEATURES_OK | DEVICE_FAILED)
                         {
                             self.device.ack_features(self.acked_features_select, v);
-                            println!("write: acked_features {}", v);
                         } else {
                             warn!(
                                 "ack virtio features in invalid state 0x{:x}",
@@ -377,55 +341,23 @@ impl BusDevice for MmioDevice {
                             return;
                         }
                     }
-                    0x24 => {
-                        println!("write: acked_features_select={}", v);
-                        self.acked_features_select = v
-                    },
-                    0x30 => {
-                        println!("write: queue_select={}", v);
-                        self.queue_select = v
-                    },
-                    0x38 => {
-                        println!("write: q.size={}", v);
-                        self.update_queue_field(|q| q.size = v as u16)
-                    },
-                    0x44 => {
-                        println!("write: q.ready={}", v == 1);
-                        self.update_queue_field(|q| q.ready = v == 1)
-                    },
+                    0x24 => self.acked_features_select = v,
+                    0x30 => self.queue_select = v,
+                    0x38 => self.update_queue_field(|q| q.size = v as u16),
+                    0x44 => self.update_queue_field(|q| q.ready = v == 1),
                     0x64 => {
                         if self.check_driver_status(DEVICE_DRIVER_OK, 0) {
                             self.interrupt_status
                                 .fetch_and(!(v as usize), Ordering::SeqCst);
-                            //println!("write: interrupt_status to {}", 
-                            //         self.interrupt_status.load(Ordering::SeqCst));
                         }
                     }
                     0x70 => self.update_driver_status(v),
-                    0x80 => {
-                        println!("write: queue field lo(q.desc_table) with {}", v);
-                        self.update_queue_field(|q| lo(&mut q.desc_table, v))
-                    },
-                    0x84 => {
-                        println!("write: queue field hi(q.desc_table) with {}", v);
-                        self.update_queue_field(|q| hi(&mut q.desc_table, v))
-                    },
-                    0x90 => {
-                        println!("write: queue field lo(q.avail_ring) with {}", v);
-                        self.update_queue_field(|q| lo(&mut q.avail_ring, v))
-                    },
-                    0x94 => {
-                        println!("write: queue field hi(q.avail_ring) with {}", v);
-                        self.update_queue_field(|q| hi(&mut q.avail_ring, v))
-                    },
-                    0xa0 => {
-                        println!("write: queue field lo(q.used_ring) with {}", v);
-                        self.update_queue_field(|q| lo(&mut q.used_ring, v))
-                    },
-                    0xa4 => {
-                        println!("write: queue field hi(q.used_ring) with {}", v);
-                        self.update_queue_field(|q| hi(&mut q.used_ring, v))
-                    },
+                    0x80 => self.update_queue_field(|q| lo(&mut q.desc_table, v)),
+                    0x84 => self.update_queue_field(|q| hi(&mut q.desc_table, v)),
+                    0x90 => self.update_queue_field(|q| lo(&mut q.avail_ring, v)),
+                    0x94 => self.update_queue_field(|q| hi(&mut q.avail_ring, v)),
+                    0xa0 => self.update_queue_field(|q| lo(&mut q.used_ring, v)),
+                    0xa4 => self.update_queue_field(|q| hi(&mut q.used_ring, v)),
                     _ => {
                         warn!("unknown virtio mmio register write: 0x{:x}", offset);
                         return;
@@ -434,7 +366,6 @@ impl BusDevice for MmioDevice {
             }
             0x100...0xfff => {
                 if self.check_driver_status(DEVICE_DRIVER, DEVICE_FAILED) {
-                    println!("write: write_config");
                     self.device.write_config(offset - 0x100, data)
                 } else {
                     warn!("can not write to device config data area before driver is ready");
