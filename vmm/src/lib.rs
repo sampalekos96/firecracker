@@ -91,7 +91,7 @@ use vmm_config::net::{
 };
 #[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
-use vstate::{Vcpu, Vm};
+use vstate::{Vcpu, Vm, Snapshot, VcpuInfo};
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -396,6 +396,7 @@ enum EpollDispatch {
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
+    Snap,
 }
 
 struct MaybeHandler {
@@ -624,9 +625,16 @@ struct Vmm {
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
 
-    // snapshot
+    // Snapshot
+    // load
     load_dir: Option<PathBuf>,
+    snap_to_load: Option<Snapshot>,
+    // dump
     dump_dir: Option<PathBuf>,
+    snap_to_dump: Option<Snapshot>,
+    snap_receiver: Option<Receiver<VcpuInfo>>,
+    snap_sender: Option<Sender<VcpuInfo>>,
+    snap_evt: EventFd,
 }
 
 impl Vmm {
@@ -654,8 +662,31 @@ impl Vmm {
         let kvm = KvmContext::new()?;
         let vm = Vm::new(kvm.fd()).map_err(Error::Vm)?;
 
-        let load_dir = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
-        let dump_dir = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
+        // Snapshot
+        let mut load_dir
+            = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
+        let dump_dir 
+            = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
+        let snap_to_load = match load_dir {
+            Some(ref mut dir) => {
+                dir.push("snapshot.json");
+                let reader = BufReader::new(File::open(dir.as_path())
+                                            .expect("Failed to open snapshot.json"));
+                let snapshot: Snapshot = serde_json::from_reader(reader).expect("Bad snapshot.json");
+                Some(snapshot)
+            },
+            None => None,
+        };
+        let (snap_sender, snap_receiver) = match dump_dir {
+            Some(_) => {
+                let (sender, receiver) = channel();
+                (Some(sender), Some(receiver))
+            }, 
+            None => (None, None)
+        };
+        let evtfd = EventFd::new().expect("Cannot create snap event fd");
+        let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
+        epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
         Ok(Vmm {
             kvm,
@@ -680,7 +711,12 @@ impl Vmm {
             write_metrics_event,
             seccomp_level,
             load_dir,
+            snap_to_load,
             dump_dir,
+            snap_to_dump: None,
+            snap_receiver,
+            snap_sender,
+            snap_evt,
         })
     }
 
@@ -987,7 +1023,7 @@ impl Vmm {
                 &self.legacy_device_manager.com_evt_1_3,
                 &self.legacy_device_manager.com_evt_2_4,
                 &self.legacy_device_manager.kbd_evt,
-                &mut self.load_dir,
+                self.snap_to_load.as_ref(),
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
         #[cfg(target_arch = "x86_64")]
@@ -1033,8 +1069,12 @@ impl Vmm {
             let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
 
+            let maybe_vcpu_state = match self.snap_to_load.as_ref() {
+                Some(snap) => Some(&snap.vcpu_states[cpu_id as usize]),
+                None => None,
+            };
             #[cfg(target_arch = "x86_64")]
-            vcpu.configure(&self.vm_config, entry_addr, &self.vm, &mut self.load_dir)
+            vcpu.configure(&self.vm_config, entry_addr, &self.vm, maybe_vcpu_state)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
             vcpus.push(vcpu);
         }
@@ -1056,10 +1096,12 @@ impl Vmm {
         self.vcpus_handles.reserve(vcpu_count as usize);
 
         let vcpus_thread_barrier = Arc::new(Barrier::new((vcpu_count + 1) as usize));
+        let vcpus_snap_barrier = Arc::new(Barrier::new((vcpu_count + 1) as usize));
 
         // We're going in reverse so we can `.pop()` on the vec and still maintain order.
         for cpu_id in (0..vcpu_count).rev() {
             let vcpu_thread_barrier = vcpus_thread_barrier.clone();
+            let vcpu_snap_barrier = vcpus_snap_barrier.clone();
             // If the lock is poisoned, it's OK to panic.
             let vcpu_exit_evt = self
                 .legacy_device_manager
@@ -1068,20 +1110,26 @@ impl Vmm {
                 .expect("Failed to start VCPUs due to poisoned i8042 lock")
                 .get_reset_evt_clone()
                 .map_err(|_| StartMicrovmError::EventFd)?;
+            let vcpu_snap_evt = self.snap_evt.try_clone().map_err(|_| StartMicrovmError::EventFd)?;
 
             // `unwrap` is safe since we are asserting that the `vcpu_count` is equal to the number
             // of items of `vcpus` vector.
             let mut vcpu = vcpus.pop().unwrap();
 
             let seccomp_level = self.seccomp_level;
-            let dump_dir = self.dump_dir.clone();
             let from_snapshot = self.load_dir.is_some();
+            let sender = self.snap_sender.clone();
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
                     .spawn(move || {
-                        vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt,
-                                 dump_dir, from_snapshot);
+                        vcpu.run(vcpu_thread_barrier,
+                                 vcpu_snap_barrier,
+                                 seccomp_level,
+                                 vcpu_exit_evt,
+                                 vcpu_snap_evt,
+                                 sender,
+                                 from_snapshot);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1230,13 +1278,8 @@ impl Vmm {
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
 
-        let dir = self.load_dir.as_mut().unwrap();
-        let file_name = format!("blk_{}.json", index);
-        dir.push(file_name);
-        let reader = BufReader::new(std::fs::File::open(dir.as_path()).expect("Missing"));
-        let queues: Vec<devices::virtio::queue::Queue> =
-            serde_json::from_reader(reader).expect("Bad json file");
-        dir.pop();
+        let queues =
+            &self.snap_to_load.as_ref().unwrap().virtio_states[index as usize].queues;
         self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
     }
 
@@ -1274,15 +1317,14 @@ impl Vmm {
 
         let mut entry_addr = GuestAddress(0);
         if let Some(ref mut dir) = self.load_dir {
-            dir.push("runtime_mem_dump");
+            dir.set_file_name("runtime_mem_dump");
             let t0 = now_monotime_us();
             let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
             let reader = &mut BufReader::new(mem_dump);
             self.guest_memory.clone().unwrap().load_initialized_memory(reader)
                 .expect("Failed to load memory dump");
-            dir.pop();
             let t1 = now_monotime_us();
-            for i in 0..self.block_device_configs.config_list.len() {
+            for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
             let t2 = now_monotime_us();
@@ -1303,6 +1345,15 @@ impl Vmm {
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+
+        if self.dump_dir.is_some() {
+            self.snap_to_dump = Some(Snapshot {
+                // TODO: currently only block devices
+                virtio_states: vec![Default::default(); self.drive_handler_id_map.len()],
+                vcpu_states: vec![Default::default(); self.vm_config.vcpu_count.unwrap() as usize],
+                ..Default::default()
+            });
+        }
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
@@ -1390,6 +1441,7 @@ impl Vmm {
 
         let epoll_raw_fd = self.epoll_context.epoll_raw_fd;
         let mut exit_on_dump = false;
+        let mut vcpu_snap_cnt = 0usize;
         // TODO: try handling of errors/failures without breaking this main loop.
         'poll: loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
@@ -1406,11 +1458,7 @@ impl Vmm {
                                 }
                                 None => warn!("leftover exit-evt in epollcontext!"),
                             }
-                            if self.dump_dir.is_none() {
-                                self.stop(i32::from(FC_EXIT_CODE_OK));
-                            } else {
-                                exit_on_dump = true;
-                            }
+                            self.stop(i32::from(FC_EXIT_CODE_OK));
                         }
                         EpollDispatch::Stdin => {
                             let mut out = [0u8; 64];
@@ -1475,20 +1523,35 @@ impl Vmm {
                                 error!("Failed to log metrics: {}", e);
                             }
                         }
+                        EpollDispatch::Snap => {
+                            self.snap_evt.read().map_err(Error::EventFd)?;
+                            vcpu_snap_cnt += 1;
+                            let info = self.snap_receiver.as_ref().unwrap().recv().unwrap();
+                            self.snap_to_dump.as_mut().unwrap().vcpu_states[info.id as usize]
+                                = info.state;
+                            if vcpu_snap_cnt == self.vcpus_handles.len() {
+                                exit_on_dump = true;
+                            }
+                        }
                     }
                 }
             }
             if exit_on_dump {
-                let dir = self.dump_dir.as_mut().unwrap();
-                for i in 0..self.block_device_configs.config_list.len() {
-                    let filename = format!("blk_{}.json", i);
-                    let queues = self.epoll_context.get_device_handler(i).unwrap().get_queues();
-                    dir.push(filename);
-                    std::fs::write(dir.as_path(),
-                        serde_json::to_string(&queues).unwrap())
-                        .expect(format!("Failed to write down block device {}'s queue state", i).as_str());
-                    dir.pop();
+                // dump virtio (now only block) devices' queue states
+                for i in 0..self.drive_handler_id_map.len() {
+                    self.snap_to_dump.as_mut().unwrap().virtio_states[i].queues =
+                        self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
+
+                self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
+                self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
+                self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
+                    .expect("Failed dumping irqchip");
+                let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
+                self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
+                std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
+                    .expect("Failed to write snapshot.json");
+
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
         }
