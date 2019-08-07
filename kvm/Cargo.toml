@@ -5,8 +5,8 @@ authors = ["The Chromium OS Authors"]
 
 [dependencies]
 libc = ">=0.2.39"
+kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "serde" }
 
-kvm-bindings = { path = "../../kvm-bindings" }
 sys_util = { path = "../sys_util" }
 
 [dev-dependencies]

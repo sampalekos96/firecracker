@@ -152,6 +152,9 @@ fn main() {
         state: InstanceState::Uninitialized,
         id: instance_id,
         vmm_version: crate_version!().to_string(),
+        // TODO: turn on snapshot through API server
+        load_dir: None,
+        dump_dir: None,
     }));
     let mmds_info = MMDS.clone();
     let (to_vmm, from_api) = channel();
