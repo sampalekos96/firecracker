@@ -7,6 +7,7 @@
 
 use super::super::EpollHandlerPayload;
 use super::INTERRUPT_STATUS_USED_RING;
+use super::super::queue::Queue;
 
 use sys_util::EventFd;
 use vhost_backend::Vhost;
@@ -77,6 +78,15 @@ impl<T: Vhost> EpollHandler for VhostEpollHandler<T>
 where
     T: std::marker::Send,
 {
+    fn set_queues(&mut self, _: &Vec<Queue>) {
+        // required by EpollHandler
+    }
+
+    fn get_queues(&self) -> Vec<Queue> {
+        // required by EpollHandler
+        Vec::new()
+    }
+
     fn handle_event(
         &mut self,
         device_event: DeviceEventT,
