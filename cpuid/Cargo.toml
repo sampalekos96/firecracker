@@ -4,5 +4,5 @@ version = "0.1.0"
 authors = ["Amazon firecracker team <firecracker-devel@amazon.com>"]
 
 [dependencies]
-kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "serde" }
+kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
 kvm = { path = "../kvm" }
