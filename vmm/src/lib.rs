@@ -688,6 +688,8 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
+        let second_serial = std::fs::File::create("second_serial").unwrap();
+
         Ok(Vmm {
             kvm,
             vm_config: VmConfig::default(),
@@ -698,7 +700,7 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager: LegacyDeviceManager::new(second_serial).map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),

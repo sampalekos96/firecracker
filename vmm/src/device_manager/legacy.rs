@@ -6,7 +6,7 @@
 // found in the THIRD-PARTY file.
 
 use std::fmt;
-use std::io::{self, stdout};
+use std::io::{self, stdout, Write};
 use std::sync::{Arc, Mutex};
 
 use devices;
@@ -43,6 +43,7 @@ type Result<T> = ::std::result::Result<T, Error>;
 pub struct LegacyDeviceManager {
     pub io_bus: devices::Bus,
     pub stdio_serial: Arc<Mutex<devices::legacy::Serial>>,
+    pub second_serial: Arc<Mutex<devices::legacy::Serial>>,
     pub i8042: Arc<Mutex<devices::legacy::I8042Device>>,
 
     pub com_evt_1_3: EventFd,
@@ -53,7 +54,10 @@ pub struct LegacyDeviceManager {
 
 impl LegacyDeviceManager {
     /// Create a new DeviceManager handling legacy devices (uart, i8042).
-    pub fn new() -> Result<Self> {
+    pub fn new<T: 'static>(second_serial: T) -> Result<Self>
+    where
+        T: Write + Send
+    {
         let io_bus = devices::Bus::new();
         let com_evt_1_3 = EventFd::new().map_err(Error::EventFd)?;
         let com_evt_2_4 = EventFd::new().map_err(Error::EventFd)?;
@@ -61,6 +65,10 @@ impl LegacyDeviceManager {
         let stdio_serial = Arc::new(Mutex::new(devices::legacy::Serial::new_out(
             com_evt_1_3.try_clone().map_err(Error::EventFd)?,
             Box::new(stdout()),
+        )));
+        let second_serial = Arc::new(Mutex::new(devices::legacy::Serial::new_out(
+                    com_evt_2_4.try_clone().map_err(Error::EventFd)?,
+                    Box::new(second_serial)
         )));
 
         // Create exit event for i8042
@@ -73,6 +81,7 @@ impl LegacyDeviceManager {
         Ok(LegacyDeviceManager {
             io_bus,
             stdio_serial,
+            second_serial,
             i8042,
             com_evt_1_3,
             com_evt_2_4,
@@ -87,13 +96,7 @@ impl LegacyDeviceManager {
             .insert(self.stdio_serial.clone(), 0x3f8, 0x8)
             .map_err(Error::BusError)?;
         self.io_bus
-            .insert(
-                Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
-                    self.com_evt_2_4.try_clone().map_err(Error::EventFd)?,
-                ))),
-                0x2f8,
-                0x8,
-            )
+            .insert(self.second_serial.clone(), 0x2f8, 0x8)
             .map_err(Error::BusError)?;
         self.io_bus
             .insert(
