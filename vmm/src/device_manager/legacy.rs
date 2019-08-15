@@ -8,6 +8,7 @@
 use std::fmt;
 use std::io::{self, stdout, Write};
 use std::sync::{Arc, Mutex};
+use std::fs::File;
 
 use devices;
 use sys_util::{EventFd, Terminal};
@@ -43,20 +44,21 @@ type Result<T> = ::std::result::Result<T, Error>;
 pub struct LegacyDeviceManager {
     pub io_bus: devices::Bus,
     pub stdio_serial: Arc<Mutex<devices::legacy::Serial>>,
-    pub second_serial: Arc<Mutex<devices::legacy::Serial>>,
+    pub second_serial: Option<Arc<Mutex<devices::legacy::Serial>>>,
     pub i8042: Arc<Mutex<devices::legacy::I8042Device>>,
 
     pub com_evt_1_3: EventFd,
     pub com_evt_2_4: EventFd,
     pub kbd_evt: EventFd,
     pub stdin_handle: io::Stdin,
+    pub second_input: Option<std::fs::File>,
 }
 
 impl LegacyDeviceManager {
     /// Create a new DeviceManager handling legacy devices (uart, i8042).
-    pub fn new<T: 'static>(second_serial: T) -> Result<Self>
+    pub fn new<T: 'static>(second_serial: Option<T>, second_input: Option<File>) -> Result<Self>
     where
-        T: Write + Send
+        T: Write + Send,
     {
         let io_bus = devices::Bus::new();
         let com_evt_1_3 = EventFd::new().map_err(Error::EventFd)?;
@@ -66,10 +68,14 @@ impl LegacyDeviceManager {
             com_evt_1_3.try_clone().map_err(Error::EventFd)?,
             Box::new(stdout()),
         )));
-        let second_serial = Arc::new(Mutex::new(devices::legacy::Serial::new_out(
-                    com_evt_2_4.try_clone().map_err(Error::EventFd)?,
-                    Box::new(second_serial)
-        )));
+        let second_serial = match second_serial {
+            Some(serial) => Some(
+                Arc::new(Mutex::new(devices::legacy::Serial::new_out(
+                            com_evt_2_4.try_clone().map_err(Error::EventFd)?,
+                            Box::new(serial))))
+                ),
+            None => None,
+        };
 
         // Create exit event for i8042
         let exit_evt = EventFd::new().map_err(Error::EventFd)?;
@@ -87,6 +93,7 @@ impl LegacyDeviceManager {
             com_evt_2_4,
             kbd_evt,
             stdin_handle: io::stdin(),
+            second_input,
         })
     }
 
@@ -95,9 +102,24 @@ impl LegacyDeviceManager {
         self.io_bus
             .insert(self.stdio_serial.clone(), 0x3f8, 0x8)
             .map_err(Error::BusError)?;
-        self.io_bus
-            .insert(self.second_serial.clone(), 0x2f8, 0x8)
-            .map_err(Error::BusError)?;
+        match self.second_serial {
+            Some(ref serial) => {
+                self.io_bus
+                    .insert(serial.clone(), 0x2f8, 0x8)
+                    .map_err(Error::BusError)?;
+            },
+            None => {
+                self.io_bus
+                    .insert(
+                        Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
+                            self.com_evt_2_4.try_clone().map_err(Error::EventFd)?,
+                        ))),
+                        0x2f8,
+                        0x8,
+                    )
+                    .map_err(Error::BusError)?;
+            }
+        }
         self.io_bus
             .insert(
                 Arc::new(Mutex::new(devices::legacy::Serial::new_sink(

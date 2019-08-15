@@ -53,7 +53,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -393,6 +393,7 @@ impl KvmContext {
 enum EpollDispatch {
     Exit,
     Stdin,
+    SecondInput,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
@@ -643,6 +644,8 @@ impl Vmm {
         api_event_fd: EventFd,
         from_api: Receiver<Box<VmmAction>>,
         seccomp_level: u32,
+        second_serial: Option<File>,
+        second_input: Option<File>,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -688,7 +691,16 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
-        let second_serial = std::fs::File::create("second_serial").unwrap();
+        match second_input {
+            Some(ref input) => {
+                epoll_context
+                    .add_event(input.try_clone()
+                               .expect("Cannot clone file handler to second input"),
+                               EpollDispatch::SecondInput)
+                    .expect("Cannot add input pipe file discriptor to epoll.");
+            },
+            None => {}
+        }
 
         Ok(Vmm {
             kvm,
@@ -700,7 +712,7 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager: LegacyDeviceManager::new(second_serial).map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager: LegacyDeviceManager::new(second_serial, second_input).map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -1535,6 +1547,20 @@ impl Vmm {
                                 exit_on_dump = true;
                             }
                         }
+                        EpollDispatch::SecondInput => {
+                            // read from the pipe until EOF
+                            let mut out = vec![];
+                            self.legacy_device_manager.second_input.as_mut().unwrap().read_to_end(&mut out)
+                                .expect("Failed to read from second input");
+                            self.legacy_device_manager
+                                .second_serial
+                                .as_mut()
+                                .unwrap()
+                                .lock()
+                                .expect("Failed to process second input event due to poisoned lock")
+                                .queue_input_bytes(&out[..])
+                                .map_err(Error::Serial)?;
+                        }
                     }
                 }
             }
@@ -2129,12 +2155,15 @@ pub fn start_vmm_thread(
     api_event_fd: EventFd,
     from_api: Receiver<Box<VmmAction>>,
     seccomp_level: u32,
+    second_serial: Option<File>,
+    second_input: Option<File>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
-            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level)
+            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
+                                   second_serial, second_input)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {
