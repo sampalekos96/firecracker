@@ -636,6 +636,9 @@ struct Vmm {
     snap_receiver: Option<Receiver<VcpuInfo>>,
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
+
+    // added to notify Firerunner we've booted up
+    ready_notifier: Option<File>,
 }
 
 impl Vmm {
@@ -646,6 +649,7 @@ impl Vmm {
         seccomp_level: u32,
         second_serial: Option<File>,
         second_input: Option<File>,
+        ready_notifier: Option<File>,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -731,6 +735,7 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
+            ready_notifier,
         })
     }
 
@@ -1133,6 +1138,10 @@ impl Vmm {
             let seccomp_level = self.seccomp_level;
             let from_snapshot = self.load_dir.is_some();
             let sender = self.snap_sender.clone();
+            let ready_notifier = match self.ready_notifier {
+                Some(ref notifier) => Some(notifier.try_clone().expect("Failed to clone write")),
+                None => None,
+            };
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
@@ -1143,7 +1152,8 @@ impl Vmm {
                                  vcpu_exit_evt,
                                  vcpu_snap_evt,
                                  sender,
-                                 from_snapshot);
+                                 from_snapshot,
+                                 ready_notifier);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1548,10 +1558,14 @@ impl Vmm {
                             }
                         }
                         EpollDispatch::SecondInput => {
-                            // read from the pipe until EOF
-                            let mut out = vec![];
-                            self.legacy_device_manager.second_input.as_mut().unwrap().read_to_end(&mut out)
+                            let size = &mut [1u8; 8]; // size in usize
+                            self.legacy_device_manager.second_input.as_mut().unwrap().read_exact(size)
+                                .expect("Failed to read the size of the request from second input");
+
+                            let mut out = vec![0u8; u64::from_le_bytes(*size) as usize];
+                            self.legacy_device_manager.second_input.as_mut().unwrap().read_exact(&mut out)
                                 .expect("Failed to read from second input");
+                            out.extend_from_slice(&[0xa]);
                             self.legacy_device_manager
                                 .second_serial
                                 .as_mut()
@@ -2157,13 +2171,14 @@ pub fn start_vmm_thread(
     seccomp_level: u32,
     second_serial: Option<File>,
     second_input: Option<File>,
+    ready_notifier: Option<File>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
             let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
-                                   second_serial, second_input)
+                                   second_serial, second_input, ready_notifier)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {

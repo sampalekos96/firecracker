@@ -166,7 +166,7 @@ fn main() {
         .expect("Cannot clone API eventFD.");
 
     let _vmm_thread_handle =
-        vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, None, None);
+        vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, None, None, None);
 
     match server.bind_and_run(bind_path, start_time_us, start_time_cpu_us, seccomp_level) {
         Ok(_) => (),
