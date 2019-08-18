@@ -6,7 +6,7 @@
 // found in the THIRD-PARTY file.
 
 use std::fmt;
-use std::io::{self, stdout, Write};
+use std::io::{self, stdout, Write, BufReader};
 use std::sync::{Arc, Mutex};
 use std::fs::File;
 
@@ -51,7 +51,7 @@ pub struct LegacyDeviceManager {
     pub com_evt_2_4: EventFd,
     pub kbd_evt: EventFd,
     pub stdin_handle: io::Stdin,
-    pub second_input: Option<std::fs::File>,
+    pub second_input: Option<io::BufReader<File>>,
 }
 
 impl LegacyDeviceManager {
@@ -83,6 +83,10 @@ impl LegacyDeviceManager {
             exit_evt,
             kbd_evt.try_clone().unwrap(),
         )));
+        let second_input = match second_input {
+            Some(f) => Some(BufReader::new(f)),
+            None => None,
+        };
 
         Ok(LegacyDeviceManager {
             io_bus,

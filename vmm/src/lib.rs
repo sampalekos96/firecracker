@@ -53,7 +53,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -1558,21 +1558,17 @@ impl Vmm {
                             }
                         }
                         EpollDispatch::SecondInput => {
-                            let size = &mut [1u8; 8]; // size in usize
-                            self.legacy_device_manager.second_input.as_mut().unwrap().read_exact(size)
-                                .expect("Failed to read the size of the request from second input");
-
-                            let mut out = vec![0u8; u64::from_le_bytes(*size) as usize];
-                            self.legacy_device_manager.second_input.as_mut().unwrap().read_exact(&mut out)
+                            let mut out = String::new();
+                            self.legacy_device_manager.second_input.as_mut().unwrap().read_line(&mut out)
                                 .expect("Failed to read from second input");
-                            out.extend_from_slice(&[0xa]);
+                            assert_eq!(out.as_bytes().last().cloned().unwrap(), '\n' as u8);
                             self.legacy_device_manager
                                 .second_serial
                                 .as_mut()
                                 .unwrap()
                                 .lock()
                                 .expect("Failed to process second input event due to poisoned lock")
-                                .queue_input_bytes(&out[..])
+                                .queue_input_bytes(out.as_bytes())
                                 .map_err(Error::Serial)?;
                         }
                     }
