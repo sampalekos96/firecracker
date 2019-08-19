@@ -1352,6 +1352,18 @@ impl Vmm {
                 self.restore_block_device(i as u64);
             }
             let t2 = now_monotime_us();
+            let serial_state = devices::legacy::SerialState {
+                interrupt_enable: 5,
+                interrupt_identification: 1,
+                line_control: 19,
+                line_status: 96,
+                modem_control: 11,
+                modem_status: 176,
+                scratch: 0,
+                baud_divisor: 12,
+            };
+            self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
+                .set_serial_state(serial_state);
             info!("restoring memory took {} ms", (t1-t0)/1000);
             info!("restoring block devices took {} us", t2-t1);
         } else {

@@ -11,3 +11,4 @@ mod serial;
 pub use self::i8042::Error as I8042DeviceError;
 pub use self::i8042::I8042Device;
 pub use self::serial::Serial;
+pub use self::serial::SerialState;
