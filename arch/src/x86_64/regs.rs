@@ -283,6 +283,14 @@ pub fn create_msr_entries() -> Vec<kvm_msr_entry> {
     entries
 }
 
+pub fn create_msr_apicbase() -> kvm_msr_entry {
+    kvm_msr_entry {
+        index: msr_index::MSR_IA32_APICBASE,
+        data: 0x0,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

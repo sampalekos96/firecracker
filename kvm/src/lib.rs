@@ -372,6 +372,24 @@ impl VmFd {
             Err(io::Error::last_os_error())
         }
     }
+    /// KVM_GET_CLOCK
+    pub fn get_clock(&self, clock: &mut kvm_clock_data) -> Result<()> {
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_CLOCK(), clock) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    /// KVM_SET_CLOCK
+    pub fn set_clock(&self, clock: &kvm_clock_data) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_CLOCK(), clock) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
 
     /// Creates/modifies a guest physical memory slot using `KVM_SET_USER_MEMORY_REGION`.
     ///

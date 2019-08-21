@@ -23,7 +23,7 @@ use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
 use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
-    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs,
+    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs, kvm_clock_data,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
@@ -134,6 +134,7 @@ pub struct VirtioState {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub clock: kvm_clock_data,
     pub ioapic: IoapicState,
     pub pic_master: kvm_pic_state,
     pub pic_slave: kvm_pic_state,
@@ -326,6 +327,20 @@ impl Vm {
         Ok(())
     }
 
+    /// This function dumps kvm_clock_data
+    pub fn dump_clock(&self, snapshot: &mut Snapshot) -> result::Result<(), io::Error> {
+        let mut clock = kvm_clock_data::default();
+        self.fd.get_clock(&mut clock)?;
+        snapshot.clock = clock;
+
+        Ok(())
+    }
+
+    /// This function loads kvm_clock_data
+    pub fn load_clock(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
+        self.fd.set_clock(&snapshot.clock)
+    }
+
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
         &self,
@@ -415,7 +430,8 @@ impl Vcpu {
     }
 
     fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
-        let entry_vec = arch::x86_64::regs::create_msr_entries();
+        let mut entry_vec = arch::x86_64::regs::create_msr_entries();
+        entry_vec.push(arch::x86_64::regs::create_msr_apicbase());
         let vec_size_bytes =
             std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
         let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
@@ -483,6 +499,12 @@ impl Vcpu {
         for (idx, _) in regs_vec.iter().enumerate() {
             regs[idx] = regs_vec[idx];
         }
+        println!("LVT Timer: {}", regs_vec[0x32] as u8);
+        println!("LVT LINT0: {}", regs_vec[0x35] as u8);
+        println!("LVT LINT1: {}", regs_vec[0x36] as u8);
+        println!("Initial Count: {}", regs_vec[0x38] as u8);
+        println!("Current Count: {}", regs_vec[0x39] as u8);
+
         let lapic = kvm_lapic_state { regs };
         self.fd.set_lapic(&lapic)?;
 

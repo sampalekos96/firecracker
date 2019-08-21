@@ -362,6 +362,7 @@ impl KvmContext {
             return Err(Error::KvmApiVersion(kvm.get_api_version()));
         }
 
+        check_cap(&kvm, Cap::AdjustClock)?;
         check_cap(&kvm, Cap::Xsave)?;
         check_cap(&kvm, Cap::Xcrs)?;
         check_cap(&kvm, Cap::MpState)?;
@@ -1615,6 +1616,8 @@ impl Vmm {
                 //self.vm.dump_memory_to_hugetlbfs();
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
+                self.vm.dump_clock(self.snap_to_dump.as_mut().unwrap())
+                    .expect("Failed to dump clock");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
                 self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
