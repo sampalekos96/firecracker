@@ -1602,6 +1602,8 @@ impl Vmm {
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
 
+                println!("Snapshot creation succeeds!");
+
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
         }
