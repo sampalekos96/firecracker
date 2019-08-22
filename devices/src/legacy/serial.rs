@@ -69,6 +69,18 @@ pub struct Serial {
     out: Option<Box<io::Write + Send>>,
 }
 
+#[derive(Debug)]
+pub struct SerialState {
+    pub interrupt_enable: u8,
+    pub interrupt_identification: u8,
+    pub line_control: u8,
+    pub line_status: u8,
+    pub modem_control: u8,
+    pub modem_status: u8,
+    pub scratch: u8,
+    pub baud_divisor: u16,
+}
+
 impl Serial {
     fn new(interrupt_evt: EventFd, out: Option<Box<io::Write + Send>>) -> Serial {
         Serial {
@@ -94,6 +106,30 @@ impl Serial {
     /// Constructs a Serial port with no connected output.
     pub fn new_sink(interrupt_evt: EventFd) -> Serial {
         Self::new(interrupt_evt, None)
+    }
+
+    pub fn get_serial_state(&self) -> SerialState {
+        SerialState {
+            interrupt_enable: self.interrupt_enable,
+            interrupt_identification: self.interrupt_identification,
+            line_control: self.line_control,
+            line_status: self.line_status,
+            modem_control: self.modem_control,
+            modem_status: self.modem_status,
+            scratch: self.scratch,
+            baud_divisor: self.baud_divisor,
+        }
+    }
+
+    pub fn set_serial_state(&mut self, state: SerialState) {
+        self.interrupt_enable = state.interrupt_enable;
+        self.interrupt_identification = state.interrupt_identification;
+        self.line_control = state.line_control;
+        self.line_status = state.line_status;
+        self.modem_control = state.modem_control;
+        self.modem_status = state.modem_status;
+        self.scratch = state.scratch;
+        self.baud_divisor = state.baud_divisor;
     }
 
     /// Queues raw bytes for the guest to read and signals the interrupt if the line status would

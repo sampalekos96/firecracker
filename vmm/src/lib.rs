@@ -53,7 +53,7 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::BufReader;
+use std::io::{BufReader, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -393,6 +393,7 @@ impl KvmContext {
 enum EpollDispatch {
     Exit,
     Stdin,
+    SecondInput,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
@@ -635,6 +636,9 @@ struct Vmm {
     snap_receiver: Option<Receiver<VcpuInfo>>,
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
+
+    // added to notify Firerunner we've booted up
+    ready_notifier: Option<File>,
 }
 
 impl Vmm {
@@ -643,6 +647,9 @@ impl Vmm {
         api_event_fd: EventFd,
         from_api: Receiver<Box<VmmAction>>,
         seccomp_level: u32,
+        second_serial: Option<File>,
+        second_input: Option<File>,
+        ready_notifier: Option<File>,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -688,6 +695,17 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
+        match second_input {
+            Some(ref input) => {
+                epoll_context
+                    .add_event(input.try_clone()
+                               .expect("Cannot clone file handler to second input"),
+                               EpollDispatch::SecondInput)
+                    .expect("Cannot add input pipe file discriptor to epoll.");
+            },
+            None => {}
+        }
+
         Ok(Vmm {
             kvm,
             vm_config: VmConfig::default(),
@@ -698,7 +716,7 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager: LegacyDeviceManager::new(second_serial, second_input).map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -717,6 +735,7 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
+            ready_notifier,
         })
     }
 
@@ -1119,6 +1138,10 @@ impl Vmm {
             let seccomp_level = self.seccomp_level;
             let from_snapshot = self.load_dir.is_some();
             let sender = self.snap_sender.clone();
+            let ready_notifier = match self.ready_notifier {
+                Some(ref notifier) => Some(notifier.try_clone().expect("Failed to clone write")),
+                None => None,
+            };
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
@@ -1129,7 +1152,8 @@ impl Vmm {
                                  vcpu_exit_evt,
                                  vcpu_snap_evt,
                                  sender,
-                                 from_snapshot);
+                                 from_snapshot,
+                                 ready_notifier);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1328,6 +1352,18 @@ impl Vmm {
                 self.restore_block_device(i as u64);
             }
             let t2 = now_monotime_us();
+            let serial_state = devices::legacy::SerialState {
+                interrupt_enable: 5,
+                interrupt_identification: 1,
+                line_control: 19,
+                line_status: 96,
+                modem_control: 11,
+                modem_status: 176,
+                scratch: 0,
+                baud_divisor: 12,
+            };
+            self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
+                .set_serial_state(serial_state);
             info!("restoring memory took {} ms", (t1-t0)/1000);
             info!("restoring block devices took {} us", t2-t1);
         } else {
@@ -1533,6 +1569,20 @@ impl Vmm {
                                 exit_on_dump = true;
                             }
                         }
+                        EpollDispatch::SecondInput => {
+                            let mut out = String::new();
+                            self.legacy_device_manager.second_input.as_mut().unwrap().read_line(&mut out)
+                                .expect("Failed to read from second input");
+                            assert_eq!(out.as_bytes().last().cloned().unwrap(), '\n' as u8);
+                            self.legacy_device_manager
+                                .second_serial
+                                .as_mut()
+                                .unwrap()
+                                .lock()
+                                .expect("Failed to process second input event due to poisoned lock")
+                                .queue_input_bytes(out.as_bytes())
+                                .map_err(Error::Serial)?;
+                        }
                     }
                 }
             }
@@ -1551,6 +1601,8 @@ impl Vmm {
                 self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
+
+                println!("Snapshot creation succeeds!");
 
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
@@ -2127,12 +2179,16 @@ pub fn start_vmm_thread(
     api_event_fd: EventFd,
     from_api: Receiver<Box<VmmAction>>,
     seccomp_level: u32,
+    second_serial: Option<File>,
+    second_input: Option<File>,
+    ready_notifier: Option<File>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
-            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level)
+            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
+                                   second_serial, second_input, ready_notifier)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {

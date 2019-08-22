@@ -13,6 +13,8 @@ use std::result;
 use std::sync::{Arc, Barrier};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::fs::File;
+use std::io::Write;
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -536,10 +538,12 @@ impl Vcpu {
                      snap_barrier: &Arc<Barrier>,
                      vcpu_snap_evt: &EventFd,
                      snap_sender: &Option<Sender<VcpuInfo>>,
-                     from_snapshot: bool) -> Result<()> {
+                     from_snapshot: bool,
+                     ready_notifier: &Option<File>) -> Result<()> {
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
+                    assert_eq!(1, data.len());
                     self.io_bus.read(u64::from(addr), data);
                     METRICS.vcpu.exit_io_in.inc();
                     Ok(())
@@ -572,7 +576,9 @@ impl Vcpu {
                         if from_snapshot {
                             super::Vmm::log_boot_time(&self.create_ts);
                         }
-                        //println!("App fs mounted.")
+                        if let Some(mut notifier) = ready_notifier.as_ref() {
+                            notifier.write_all(&[0u8; 1usize]).expect("Failed to notify that boot is complete");
+                        }
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
                         //println!("App done.")
@@ -652,6 +658,7 @@ impl Vcpu {
         vcpu_snap_evt: EventFd,
         snap_sender: Option<Sender<VcpuInfo>>,
         from_snapshot: bool,
+        ready_notifier: Option<File>,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -666,7 +673,7 @@ impl Vcpu {
         thread_barrier.wait();
 
         loop {
-            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender, from_snapshot);
+            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender, from_snapshot, &ready_notifier);
             if !ret.is_ok() {
                 match ret.err() {
                     _ => {
