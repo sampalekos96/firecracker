@@ -68,14 +68,12 @@ impl LegacyDeviceManager {
             com_evt_1_3.try_clone().map_err(Error::EventFd)?,
             Box::new(stdout()),
         )));
-        let second_serial = match second_serial {
-            Some(serial) => Some(
-                Arc::new(Mutex::new(devices::legacy::Serial::new_out(
-                            com_evt_2_4.try_clone().map_err(Error::EventFd)?,
-                            Box::new(serial))))
-                ),
-            None => None,
-        };
+        let second_serial = second_serial.map(|serial|
+            Arc::new(Mutex::new(devices::legacy::Serial::new_out(
+                        com_evt_2_4.try_clone().expect("Cannot clone com_evt_2_4"),
+                        Box::new(serial),
+            )))
+        );
 
         // Create exit event for i8042
         let exit_evt = EventFd::new().map_err(Error::EventFd)?;
@@ -83,10 +81,7 @@ impl LegacyDeviceManager {
             exit_evt,
             kbd_evt.try_clone().unwrap(),
         )));
-        let second_input = match second_input {
-            Some(f) => Some(BufReader::new(f)),
-            None => None,
-        };
+        let second_input = second_input.map(|f| BufReader::new(f));
 
         Ok(LegacyDeviceManager {
             io_bus,
