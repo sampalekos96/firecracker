@@ -639,6 +639,7 @@ struct Vmm {
 
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
+    notifier_id: u32,
 }
 
 impl Vmm {
@@ -650,6 +651,7 @@ impl Vmm {
         second_serial: Option<File>,
         second_input: Option<File>,
         ready_notifier: Option<File>,
+        notifier_id: u32,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -736,6 +738,7 @@ impl Vmm {
             snap_sender,
             snap_evt,
             ready_notifier,
+            notifier_id,
         })
     }
 
@@ -1142,6 +1145,7 @@ impl Vmm {
                 Some(ref notifier) => Some(notifier.try_clone().expect("Failed to clone write")),
                 None => None,
             };
+            let notifier_id = self.notifier_id;
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
@@ -1153,7 +1157,8 @@ impl Vmm {
                                  vcpu_snap_evt,
                                  sender,
                                  from_snapshot,
-                                 ready_notifier);
+                                 ready_notifier,
+                                 notifier_id,);
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -2182,13 +2187,14 @@ pub fn start_vmm_thread(
     second_serial: Option<File>,
     second_input: Option<File>,
     ready_notifier: Option<File>,
+    notifier_id: u32,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
             let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
-                                   second_serial, second_input, ready_notifier)
+                                   second_serial, second_input, ready_notifier, notifier_id)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {

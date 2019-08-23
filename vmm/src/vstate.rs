@@ -539,7 +539,8 @@ impl Vcpu {
                      vcpu_snap_evt: &EventFd,
                      snap_sender: &Option<Sender<VcpuInfo>>,
                      from_snapshot: bool,
-                     ready_notifier: &Option<File>) -> Result<()> {
+                     ready_notifier: &Option<File>,
+                     notifier_id: u32) -> Result<()> {
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -577,7 +578,7 @@ impl Vcpu {
                             super::Vmm::log_boot_time(&self.create_ts);
                         }
                         if let Some(mut notifier) = ready_notifier.as_ref() {
-                            notifier.write_all(&[0u8; 1usize]).expect("Failed to notify that boot is complete");
+                            notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
                         }
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
@@ -659,6 +660,7 @@ impl Vcpu {
         snap_sender: Option<Sender<VcpuInfo>>,
         from_snapshot: bool,
         ready_notifier: Option<File>,
+        notifier_id: u32,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -673,7 +675,7 @@ impl Vcpu {
         thread_barrier.wait();
 
         loop {
-            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender, from_snapshot, &ready_notifier);
+            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender, from_snapshot, &ready_notifier, notifier_id);
             if !ret.is_ok() {
                 match ret.err() {
                     _ => {
