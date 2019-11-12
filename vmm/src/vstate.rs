@@ -499,11 +499,14 @@ impl Vcpu {
         for (idx, _) in regs_vec.iter().enumerate() {
             regs[idx] = regs_vec[idx];
         }
-        println!("LVT Timer: {}", regs_vec[0x32] as u8);
-        println!("LVT LINT0: {}", regs_vec[0x35] as u8);
-        println!("LVT LINT1: {}", regs_vec[0x36] as u8);
-        println!("Initial Count: {}", regs_vec[0x38] as u8);
-        println!("Current Count: {}", regs_vec[0x39] as u8);
+        let lvtt = u32::from_le_bytes([regs_vec[0x320] as u8, regs_vec[0x321] as u8, regs_vec[0x322] as u8, regs_vec[0x323] as u8]);
+        println!("LVT Timer: {:#x}", lvtt);
+        let lint0 = u32::from_le_bytes([regs_vec[0x350] as u8, regs_vec[0x351] as u8, regs_vec[0x352] as u8, regs_vec[0x353] as u8]);
+        println!("LVT LINT0: {:#x}", lint0);
+        let lint1 = u32::from_le_bytes([regs_vec[0x360] as u8, regs_vec[0x361] as u8, regs_vec[0x362] as u8, regs_vec[0x363] as u8]);
+        println!("LVT LINT1: {:#x}", lint1);
+        //println!("Initial Count: {}", regs_vec[0x38] as u8);
+        //println!("Current Count: {}", regs_vec[0x39] as u8);
 
         let lapic = kvm_lapic_state { regs };
         self.fd.set_lapic(&lapic)?;
