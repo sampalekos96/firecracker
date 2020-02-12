@@ -21,6 +21,7 @@ extern crate serde_json;
 extern crate time;
 extern crate timerfd;
 extern crate byteorder;
+extern crate memfd;
 
 extern crate arch;
 #[cfg(target_arch = "x86_64")]
@@ -991,8 +992,14 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        self.guest_memory =
-            Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        if self.load_dir.is_some() {
+            self.guest_memory = 
+                Some(GuestMemory::new_from_shm(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+                //Some(GuestMemory::new_from_hugetlbfs(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        } else {
+          self.guest_memory =
+              Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        }
         self.vm
             .memory_init(
                 self.guest_memory
@@ -1003,7 +1010,6 @@ impl Vmm {
                 &self.kvm,
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
-
         Ok(())
     }
 
@@ -1314,6 +1320,7 @@ impl Vmm {
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
+        let t00 = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::StartMicrovm(
                 ErrorKind::User,
@@ -1336,6 +1343,7 @@ impl Vmm {
         self.init_guest_memory()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+        let t0 = now_monotime_us();
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
@@ -1346,17 +1354,15 @@ impl Vmm {
 
         let mut entry_addr = GuestAddress(0);
         if let Some(ref mut dir) = self.load_dir {
-            dir.set_file_name("runtime_mem_dump");
-            let t0 = now_monotime_us();
-            let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
-            let reader = &mut BufReader::new(mem_dump);
-            self.guest_memory.clone().unwrap().load_initialized_memory(reader)
-                .expect("Failed to load memory dump");
-            let t1 = now_monotime_us();
+            //dir.set_file_name("runtime_mem_dump");
+            //let t0 = now_monotime_us();
+            //let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
+            //let reader = &mut BufReader::new(mem_dump);
+            //self.guest_memory.clone().unwrap().load_initialized_memory(reader)
+            //    .expect("Failed to load memory dump");
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
-            let t2 = now_monotime_us();
             let serial_state = devices::legacy::SerialState {
                 interrupt_enable: 5,
                 interrupt_identification: 1,
@@ -1369,8 +1375,6 @@ impl Vmm {
             };
             self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
                 .set_serial_state(serial_state);
-            info!("restoring memory took {} ms", (t1-t0)/1000);
-            info!("restoring block devices took {} us", t2-t1);
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1382,6 +1386,7 @@ impl Vmm {
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t1 = now_monotime_us();
 
         self.epoll_context.disable_stdin_event();
 
@@ -1389,6 +1394,7 @@ impl Vmm {
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t2 = now_monotime_us();
 
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
@@ -1401,6 +1407,8 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t3 = now_monotime_us();
+        println!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1602,7 +1610,9 @@ impl Vmm {
                 }
 
                 self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
-                self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
+                //self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
+                self.vm.dump_memory_to_shm();
+                //self.vm.dump_memory_to_hugetlbfs();
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
@@ -2114,7 +2124,7 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
-        info!(
+        println!(
             "Guest-boot-time = {:>6} us {} ms, {:>6} CPU us {} CPU ms",
             boot_time_us,
             boot_time_us / 1000,

@@ -210,6 +210,7 @@ impl Vm {
         if guest_mem.num_regions() > kvm_context.max_memslots() {
             return Err(Error::NotEnoughMemorySlots);
         }
+        let t0 = now_monotime_us();
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
@@ -228,12 +229,14 @@ impl Vm {
             self.fd.set_user_memory_region(memory_region)
         })?;
         self.guest_mem = Some(guest_mem);
+        let t1 = now_monotime_us();
 
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(GuestAddress(arch::x86_64::layout::KVM_TSS_ADDRESS).offset())
             .map_err(Error::VmSetup)?;
-
+        let t2 = now_monotime_us();
+        println!("set_user_memory_region took {}us, set_tss_address took {} us", t1-t0, t2-t1);
         Ok(())
     }
 
@@ -248,6 +251,37 @@ impl Vm {
         let writer = &mut BufWriter::new(mem_dump);
         self.guest_mem.as_ref().unwrap().dump_initialized_memory(writer)
             .expect("Failed to write runtime_mem_dump");
+    }
+
+    /// Dump memory to named shared memory
+    pub fn dump_memory_to_shm(&self) {
+        let shm_fd = unsafe {
+            libc::shm_open(
+                std::ffi::CString::new("/python-128mb").expect("CString::new failed").as_ptr(),
+                libc::O_CREAT | libc::O_RDWR | libc::O_TRUNC,
+                libc::S_IRWXO)
+        };
+        unsafe {
+            libc::ftruncate(shm_fd, 128 * 1048576);
+        }
+        use std::os::unix::io::FromRawFd;
+        let shm_file = unsafe { File::from_raw_fd(shm_fd) };
+        let writer = &mut BufWriter::new(shm_file);
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_shm(writer)
+            .expect("Failed to write /dev/shm/python-128mb");
+    }
+
+    /// Dump memory to hugetlbfs
+    pub fn dump_memory_to_hugetlbfs(&self) {
+        let f = &mut std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("/mnt/huge/python2-128mb")
+            .expect("Failed to open /mnt/huge/python2-128mb");
+        f.set_len(128 * 1048576).expect("Failed to set file size");
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory(f)
+            .expect("Failed to write /mnt/huge/python-128mb");
     }
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
@@ -574,9 +608,9 @@ impl Vcpu {
                         panic!("mounting app file system failed");
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
-                        if from_snapshot {
+                        //if from_snapshot {
                             super::Vmm::log_boot_time(&self.create_ts);
-                        }
+                        //}
                         if let Some(mut notifier) = ready_notifier.as_ref() {
                             notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
                         }

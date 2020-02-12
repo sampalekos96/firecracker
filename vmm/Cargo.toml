@@ -15,6 +15,7 @@ time = ">=0.1.39"
 timerfd = ">=1.0"
 byteorder = ">=1.2.1"
 kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
+memfd = ">=0.3.0"
 
 arch = { path = "../arch" }
 devices = { path = "../devices" }

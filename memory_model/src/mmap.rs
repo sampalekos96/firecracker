@@ -8,6 +8,8 @@
 //! The mmap module provides a safe interface to mmap memory and ensures unmap is called when the
 //! mmap object leaves scope.
 
+extern crate fc_util;
+
 use std;
 use std::io::{self, Read, Write};
 use std::ptr::null_mut;
@@ -65,6 +67,75 @@ impl MemoryMapping {
                 0,
             )
         };
+        if addr == libc::MAP_FAILED {
+            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
+        }
+        Ok(MemoryMapping {
+            addr: addr as *mut u8,
+            size,
+        })
+    }
+
+    /// Creates a private mapping of `size` bytes backed by the provided shared memory object
+    ///
+    /// # Arguments
+    /// * `size` - Size of memory region in bytes.
+    pub fn new_from_shm_open(size: usize, offset: usize) -> Result<MemoryMapping> {
+        // This is safe because we are creating an anonymous mapping in a place not already used by
+        // any other area in this process.
+        let t0 = fc_util::now_monotime_us();
+        let shm_fd = unsafe {
+            libc::shm_open(
+                std::ffi::CString::new("/python-128mb").expect("CString::new failed").as_ptr(),
+                libc::O_RDWR,
+                libc::S_IRWXO)
+        };
+        let t1 = fc_util::now_monotime_us();
+        let addr = unsafe {
+            libc::mmap(
+                null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                shm_fd,
+                offset as libc::off_t,
+            )
+        };
+        let t2 = fc_util::now_monotime_us();
+        println!("shm_open took {} us, mmap took {} us", t1-t0, t2-t1);
+        if addr == libc::MAP_FAILED {
+            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
+        }
+        Ok(MemoryMapping {
+            addr: addr as *mut u8,
+            size,
+        })
+    }
+
+    /// Creates a private mapping of `size` bytes backed by the provided hugetlbfs file
+    ///
+    /// # Arguments
+    /// * `size` - Size of memory region in bytes.
+    pub fn new_from_hugetlbfs(size: usize, offset: usize) -> Result<MemoryMapping> {
+        // This is safe because we are creating an anonymous mapping in a place not already used by
+        // any other area in this process.
+        use std::os::unix::io::IntoRawFd;
+        let t0 = fc_util::now_monotime_us();
+        let fd = std::fs::File::open("/mnt/huge/python-128mb")
+            .expect("File::open failed").into_raw_fd();
+        let t1 = fc_util::now_monotime_us();
+        let addr = unsafe {
+            libc::mmap(
+                null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                fd,
+                offset as libc::off_t,
+            )
+        };
+        let t2 = fc_util::now_monotime_us();
+        println!("std::fs::File::open took {} us, libc::mmap took {} us", t1-t0, t2-t1);
         if addr == libc::MAP_FAILED {
             return Err(Error::SystemCallFailed(io::Error::last_os_error()));
         }

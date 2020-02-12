@@ -99,6 +99,69 @@ impl GuestMemory {
         })
     }
 
+    /// Creates a container for guest memory regions MAP_PRIVATE from the provided named shared
+    /// memory object.
+    /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
+    pub fn new_from_shm(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
+        if ranges.is_empty() {
+            return Err(Error::NoMemoryRegions);
+        }
+
+        let mut regions = Vec::<MemoryRegion>::new();
+        for range in ranges.iter() {
+            if let Some(last) = regions.last() {
+                if last
+                    .guest_base
+                    .checked_add(last.mapping.size())
+                    .map_or(true, |a| a > range.0)
+                {
+                    return Err(Error::MemoryRegionOverlap);
+                }
+            }
+
+            let mapping = MemoryMapping::new_from_shm_open(range.1, range.0.offset()).map_err(Error::MemoryMappingFailed)?;
+            regions.push(MemoryRegion {
+                mapping,
+                guest_base: range.0,
+            });
+        }
+
+        Ok(GuestMemory {
+            regions: Arc::new(regions),
+        })
+    }
+
+    /// Creates a container for guest memory regions MAP_PRIVATE from the provided hugetlbfs file.
+    /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
+    pub fn new_from_hugetlbfs(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
+        if ranges.is_empty() {
+            return Err(Error::NoMemoryRegions);
+        }
+
+        let mut regions = Vec::<MemoryRegion>::new();
+        for range in ranges.iter() {
+            if let Some(last) = regions.last() {
+                if last
+                    .guest_base
+                    .checked_add(last.mapping.size())
+                    .map_or(true, |a| a > range.0)
+                {
+                    return Err(Error::MemoryRegionOverlap);
+                }
+            }
+
+            let mapping = MemoryMapping::new_from_hugetlbfs(range.1, range.0.offset()).map_err(Error::MemoryMappingFailed)?;
+            regions.push(MemoryRegion {
+                mapping,
+                guest_base: range.0,
+            });
+        }
+
+        Ok(GuestMemory {
+            regions: Arc::new(regions),
+        })
+    }
+
     /// Returns the end address of memory.
     ///
     /// # Examples
@@ -177,7 +240,7 @@ impl GuestMemory {
         pfns
     }
 
-    /// return a mapping from guest physical page numbers to host physical page numbers
+    /// return a mapping from host physical page numbers to guest physical page numbers
     /// for the entire guest memory
     pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
@@ -193,6 +256,29 @@ impl GuestMemory {
             page_i_base += region.mapping.size() / page_size as usize;
         }
         pfns
+    }
+
+    /// Write all initialized guest memory pages to the provided writer.
+    /// Here being initialized means being present in physical RAM.
+    /// The writer should be backed by a shared memory of the same size
+    /// of the guest memory.
+    /// Therefore, the initialized pages are written out to the same offset.
+    pub fn dump_initialized_memory_to_shm<F>(&self, writer: &mut F) -> Result<()>
+    where
+        F: Write + Seek,
+    {
+        let page_size = 4096usize;
+        let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
+        gpfns.as_mut_slice().sort();
+        for pfn in gpfns {
+            writer.seek(std::io::SeekFrom::Start((pfn * page_size) as u64)).expect("seek failed");
+            // write page content
+            self.write_from_memory(
+                GuestAddress(pfn * page_size),
+                writer,
+                page_size)?;
+        }
+        Ok(())
     }
 
     /// Write all initialized guest memory pages to the provided writer.
