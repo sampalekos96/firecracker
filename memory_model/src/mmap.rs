@@ -13,6 +13,7 @@ extern crate fc_util;
 use std;
 use std::io::{self, Read, Write};
 use std::ptr::null_mut;
+use std::os::unix::io::RawFd;
 
 use libc;
 
@@ -76,33 +77,47 @@ impl MemoryMapping {
         })
     }
 
+    /// Creates an file-mapped memory of `size` bytes.
+    ///
+    /// # Arguments
+    /// * `size` - Size of memory region in bytes.
+    pub fn new_from_file(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
+        let addr = unsafe {
+            libc::mmap(
+                null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_HUGETLB | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                fd,
+                offset as libc::off_t,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
+        }
+        Ok(MemoryMapping {
+            addr: addr as *mut u8,
+            size,
+        })
+    }
+
     /// Creates a private mapping of `size` bytes backed by the provided shared memory object
     ///
     /// # Arguments
     /// * `size` - Size of memory region in bytes.
-    pub fn new_from_shm_open(size: usize, offset: usize) -> Result<MemoryMapping> {
+    pub fn new_from_shm_open(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
         // This is safe because we are creating an anonymous mapping in a place not already used by
         // any other area in this process.
-        let t0 = fc_util::now_monotime_us();
-        let shm_fd = unsafe {
-            libc::shm_open(
-                std::ffi::CString::new("/python-128mb").expect("CString::new failed").as_ptr(),
-                libc::O_RDWR,
-                libc::S_IRWXO)
-        };
-        let t1 = fc_util::now_monotime_us();
         let addr = unsafe {
             libc::mmap(
                 null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                shm_fd,
+                fd,
                 offset as libc::off_t,
             )
         };
-        let t2 = fc_util::now_monotime_us();
-        println!("shm_open took {} us, mmap took {} us", t1-t0, t2-t1);
         if addr == libc::MAP_FAILED {
             return Err(Error::SystemCallFailed(io::Error::last_os_error()));
         }
@@ -116,26 +131,19 @@ impl MemoryMapping {
     ///
     /// # Arguments
     /// * `size` - Size of memory region in bytes.
-    pub fn new_from_hugetlbfs(size: usize, offset: usize) -> Result<MemoryMapping> {
+    pub fn new_from_hugetlbfs(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
         // This is safe because we are creating an anonymous mapping in a place not already used by
         // any other area in this process.
-        use std::os::unix::io::IntoRawFd;
-        let t0 = fc_util::now_monotime_us();
-        let fd = std::fs::File::open("/mnt/huge/python-128mb")
-            .expect("File::open failed").into_raw_fd();
-        let t1 = fc_util::now_monotime_us();
         let addr = unsafe {
             libc::mmap(
                 null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                libc::MAP_HUGETLB | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
                 fd,
                 offset as libc::off_t,
             )
         };
-        let t2 = fc_util::now_monotime_us();
-        println!("std::fs::File::open took {} us, libc::mmap took {} us", t1-t0, t2-t1);
         if addr == libc::MAP_FAILED {
             return Err(Error::SystemCallFailed(io::Error::last_os_error()));
         }
@@ -356,8 +364,9 @@ impl MemoryMapping {
         std::slice::from_raw_parts(self.addr, self.size)
     }
 
+    /// as_mut_slice implements as_mut_slice semantic for MemoryMapping
     #[allow(clippy::mut_from_ref)]
-    unsafe fn as_mut_slice(&self) -> &mut [u8] {
+    pub unsafe fn as_mut_slice(&self) -> &mut [u8] {
         // This is safe because we mapped the area at addr ourselves, so this slice will not
         // overflow. However, it is possible to alias.
         std::slice::from_raw_parts_mut(self.addr, self.size)

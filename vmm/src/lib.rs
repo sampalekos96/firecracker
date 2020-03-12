@@ -994,12 +994,14 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if self.load_dir.is_some() {
+            self.load_dir.as_mut().unwrap().set_file_name("runtime_mem_dump");
             self.guest_memory = 
+                //Some(GuestMemory::new_from_file(&arch_mem_regions, self.load_dir.as_ref().unwrap()).map_err(StartMicrovmError::GuestMemory)?);
                 Some(GuestMemory::new_from_shm(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
                 //Some(GuestMemory::new_from_hugetlbfs(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
         } else {
-          self.guest_memory =
-              Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+            self.guest_memory =
+                Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
         }
         self.vm
             .memory_init(
@@ -1376,6 +1378,7 @@ impl Vmm {
             };
             self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
                 .set_serial_state(serial_state);
+            self.vm.load_clock(self.snap_to_load.as_ref().unwrap()).expect("KVM_SET_CLOCK ioctl failed");
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1612,6 +1615,7 @@ impl Vmm {
 
                 self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
                 //self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
+                //self.vm.dump_memory_whole(self.dump_dir.as_ref().unwrap());
                 self.vm.dump_memory_to_shm();
                 //self.vm.dump_memory_to_hugetlbfs();
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())

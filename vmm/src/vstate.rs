@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use fc_util::now_monotime_us;
+use fc_util::{now_monotime_us, now_cputime_us};
 
 use std::io;
 use std::io::BufWriter;
@@ -38,6 +38,11 @@ const KVM_MEM_LOG_DIRTY_PAGES: u32 = 0x1;
 
 const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x03f0;
 const MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE: u8 = 123;
+
+static mut restored_time_1: u64 = 0;
+static mut restored_time_2: u64 = 0;
+static mut restored_cputime_1: u64 = 0;
+static mut restored_cputime_2: u64 = 0;
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug)]
@@ -211,7 +216,7 @@ impl Vm {
         if guest_mem.num_regions() > kvm_context.max_memslots() {
             return Err(Error::NotEnoughMemorySlots);
         }
-        let t0 = now_monotime_us();
+        //let t0 = now_monotime_us();
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
@@ -230,14 +235,14 @@ impl Vm {
             self.fd.set_user_memory_region(memory_region)
         })?;
         self.guest_mem = Some(guest_mem);
-        let t1 = now_monotime_us();
+        //let t1 = now_monotime_us();
 
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(GuestAddress(arch::x86_64::layout::KVM_TSS_ADDRESS).offset())
             .map_err(Error::VmSetup)?;
-        let t2 = now_monotime_us();
-        println!("set_user_memory_region took {}us, set_tss_address took {} us", t1-t0, t2-t1);
+        //let t2 = now_monotime_us();
+        //println!("set_user_memory_region took {}us, set_tss_address took {} us", t1-t0, t2-t1);
         Ok(())
     }
 
@@ -251,6 +256,19 @@ impl Vm {
             .expect("Failed to open runtime_mem_dump");
         let writer = &mut BufWriter::new(mem_dump);
         self.guest_mem.as_ref().unwrap().dump_initialized_memory(writer)
+            .expect("Failed to write runtime_mem_dump");
+    }
+
+    pub fn dump_memory_whole(&self, path: &PathBuf) {
+        let mem_dump = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path.as_path())
+            .expect("Failed to open runtime_mem_dump");
+        mem_dump.set_len(self.guest_mem.as_ref().unwrap().end_addr().offset() as u64).expect("File::set_len failed");
+        let writer = &mut BufWriter::new(mem_dump);
+        self.guest_mem.as_ref().unwrap().dump_whole_memory(writer)
             .expect("Failed to write runtime_mem_dump");
     }
 
@@ -274,15 +292,7 @@ impl Vm {
 
     /// Dump memory to hugetlbfs
     pub fn dump_memory_to_hugetlbfs(&self) {
-        let f = &mut std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open("/mnt/huge/python2-128mb")
-            .expect("Failed to open /mnt/huge/python2-128mb");
-        f.set_len(128 * 1048576).expect("Failed to set file size");
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory(f)
-            .expect("Failed to write /mnt/huge/python-128mb");
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_hugetlbfs();
     }
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
@@ -331,6 +341,7 @@ impl Vm {
     pub fn dump_clock(&self, snapshot: &mut Snapshot) -> result::Result<(), io::Error> {
         let mut clock = kvm_clock_data::default();
         self.fd.get_clock(&mut clock)?;
+        clock.flags = 0; // set to zero since we want to load the clock directly
         snapshot.clock = clock;
 
         Ok(())
@@ -628,12 +639,29 @@ impl Vcpu {
                         //if from_snapshot {
                             super::Vmm::log_boot_time(&self.create_ts);
                         //}
-                        if let Some(mut notifier) = ready_notifier.as_ref() {
-                            notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                        //if let Some(mut notifier) = ready_notifier.as_ref() {
+                        //    notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                        //}
+                        unsafe {
+                            restored_time_1 = now_monotime_us();
+                            restored_cputime_1 = now_cputime_us();
                         }
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
-                        //println!("App done.")
+                        unsafe {
+                            let now = now_monotime_us();
+                            let nowcpu = now_cputime_us();
+                            println!("App execution time: {}us, cputime: {}us",
+                                now-restored_time_2, nowcpu-restored_cputime_2);
+                        }
+                    }
+                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 128 {
+                        unsafe {
+                            restored_time_2 = now_monotime_us();
+                            restored_cputime_2 = now_cputime_us();
+                            println!("time.sleep(0.000001) time: {}us, cputime: {}us",
+                                restored_time_2-restored_time_1, restored_cputime_2-restored_cputime_1);
+                        }
                     }
 
                     self.io_bus.write(u64::from(addr), data);
