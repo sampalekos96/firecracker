@@ -13,7 +13,7 @@ use std::result;
 use std::sync::{Arc, Barrier};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 
 use super::{KvmContext, TimestampUs};
@@ -273,21 +273,28 @@ impl Vm {
     }
 
     /// Dump memory to named shared memory
-    pub fn dump_memory_to_shm(&self) {
+    pub fn dump_memory_to_shm(&self, dump_dir: &mut PathBuf) {
+        let name = dump_dir.file_name().unwrap().to_str().unwrap();
         let shm_fd = unsafe {
             libc::shm_open(
-                std::ffi::CString::new("/python-128mb").expect("CString::new failed").as_ptr(),
+                std::ffi::CString::new(name).expect("CString::new failed").as_ptr(),
                 libc::O_CREAT | libc::O_RDWR | libc::O_TRUNC,
                 libc::S_IRWXO)
         };
         unsafe {
-            libc::ftruncate(shm_fd, 128 * 1048576);
+            libc::ftruncate(shm_fd, self.guest_mem.as_ref().unwrap().end_addr().offset() as libc::off_t);
         }
         use std::os::unix::io::FromRawFd;
         let shm_file = unsafe { File::from_raw_fd(shm_fd) };
         let writer = &mut BufWriter::new(shm_file);
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_shm(writer)
-            .expect("Failed to write /dev/shm/python-128mb");
+        dump_dir.push("page_numbers");
+        let mut page_number_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dump_dir.as_path()).expect("Failed to open page_numbers");
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_shm(writer, &mut page_number_file)
+            .expect("Failed to write /dev/shm");
     }
 
     /// Dump memory to hugetlbfs
@@ -642,10 +649,11 @@ impl Vcpu {
                         //if let Some(mut notifier) = ready_notifier.as_ref() {
                         //    notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
                         //}
-                        unsafe {
-                            restored_time_1 = now_monotime_us();
-                            restored_cputime_1 = now_cputime_us();
-                        }
+                        //unsafe {
+                        //    restored_time_1 = now_monotime_us();
+                        //    restored_cputime_1 = now_cputime_us();
+                        //}
+                        //return Err(Error::VcpuUnhandledKvmExit)
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
                         unsafe {

@@ -40,6 +40,12 @@ pub struct InstanceInfo {
     pub load_dir: Option<std::path::PathBuf>,
     /// The directory contains the snapshot
     pub dump_dir: Option<std::path::PathBuf>,
+    /// The start time of this instance CLOCK_MONOTONIC
+    pub start_monotime_us: u64,
+    /// The start time of this instance CLOCK_PROCESS_CPUTIME
+    pub start_cputime_us: u64,
+    /// indicates how do we restore from snapshots: memory_copying or not
+    pub memory_copy: bool,
     /// The version of the VMM that runs the microVM.
     pub vmm_version: String,
 }

@@ -7,7 +7,9 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Write, Seek, SeekFrom, BufRead, BufReader};
+use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::{mem, result};
 use std::collections::BTreeMap;
@@ -103,7 +105,7 @@ impl GuestMemory {
     /// Creates a container for guest memory regions MAP_PRIVATE from the provided named shared
     /// memory object.
     /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
-    pub fn new_from_file(ranges: &[(GuestAddress, usize)], path: &std::path::PathBuf) -> Result<GuestMemory> {
+    pub fn new_from_file(ranges: &[(GuestAddress, usize)], path: &PathBuf) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
         }
@@ -135,19 +137,43 @@ impl GuestMemory {
 
     /// Creates a container for guest memory regions MAP_PRIVATE from the provided named shared
     /// memory object.
-    /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
-    pub fn new_from_shm(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
+    pub fn new_from_shm(ranges: &[(GuestAddress, usize)], load_dir: &mut PathBuf, copy: bool) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
         }
 
         let mut regions = Vec::<MemoryRegion>::new();
+        let mut shm_name = String::from("/");
+        shm_name.push_str(load_dir.file_name().unwrap().to_str().unwrap());
         let shm_fd = unsafe {
             libc::shm_open(
-                std::ffi::CString::new("/python-128mb").expect("CString::new failed").as_ptr(),
+                std::ffi::CString::new(shm_name.as_str()).expect("CString::new failed").as_ptr(),
                 libc::O_RDWR,
                 libc::S_IRWXO)
         };
+
+        if copy {
+            // we are copying memory
+            // allocate anonymous memory
+            let guest_mem = GuestMemory::new(ranges).expect("Failed to create new guest memory");
+            // open the named shared memory file
+            let mut shm_file_name = String::from("/dev/shm");
+            shm_file_name.push_str(shm_name.as_str());
+            let mut shm_file = File::open(shm_file_name).expect("Failed to open shared memory file");
+            // open the file contain page numbers
+            load_dir.set_file_name("page_numbers");
+            let page_numbers = BufReader::new(File::open(load_dir.as_path()).expect("Failed to open page_numbers")).lines();
+            // load memory dump
+            let page_size = 4096;
+            for line in page_numbers {
+                let page_number = line.expect("Failed to read a page number");
+                let page_number = usize::from_str_radix(page_number.as_str().trim(), 16).expect("Failed to parse a page number");
+                shm_file.seek(SeekFrom::Start((page_size * page_number) as u64)).expect("seek failed");
+                guest_mem.read_to_memory(GuestAddress(page_size*page_number), &mut shm_file, page_size)?;
+            }
+            return Ok(guest_mem);
+        }
+
         for range in ranges.iter() {
             if let Some(last) = regions.last() {
                 if last
@@ -159,7 +185,8 @@ impl GuestMemory {
                 }
             }
 
-            let mapping = MemoryMapping::new_from_shm_open(range.1, range.0.offset(), shm_fd).map_err(Error::MemoryMappingFailed)?;
+            let mapping = MemoryMapping::new_from_shm_open(range.1, range.0.offset(), shm_fd)
+                .map_err(Error::MemoryMappingFailed)?;
             regions.push(MemoryRegion {
                 mapping,
                 guest_base: range.0,
@@ -179,7 +206,7 @@ impl GuestMemory {
         }
 
         let mut regions = Vec::<MemoryRegion>::new();
-        let fd = std::fs::File::open("/dev/hugepages/python2-128mb")
+        let fd = File::open("/dev/hugepages/python2-128mb")
             .expect("File::open failed").into_raw_fd();
         for range in ranges.iter() {
             if let Some(last) = regions.last() {
@@ -266,7 +293,7 @@ impl GuestMemory {
         let path = format!("/proc/{}/pagemap", std::process::id());
         let offset = addr/page_size*PM_ENTRY_SIZE;
 
-        let mut pagemap = std::fs::File::open(&path).unwrap();
+        let mut pagemap = File::open(&path).unwrap();
         pagemap.seek(SeekFrom::Start(offset)).unwrap_or_default();
 
         let num_pages = (size / page_size) as usize;
@@ -336,21 +363,16 @@ impl GuestMemory {
     /// The writer should be backed by a shared memory of the same size
     /// of the guest memory.
     /// Therefore, the initialized pages are written out to the same offset.
-    pub fn dump_initialized_memory_to_shm<F>(&self, writer: &mut F) -> Result<()>
+    pub fn dump_initialized_memory_to_shm<F>(&self, writer: &mut F, page_number_file: &mut File) -> Result<()>
     where
         F: Write + Seek,
     {
         let page_size = 4096usize;
         let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
         gpfns.as_mut_slice().sort();
-        let mut gpfn_recorder = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open("page_numbers")
-            .expect("failed to open page_numbers");
         for pfn in gpfns {
-            write!(&mut gpfn_recorder, "{}", pfn).expect("failed to write to page_numbers");
-            writer.seek(std::io::SeekFrom::Start((pfn * page_size) as u64)).expect("seek failed");
+            write!(page_number_file, "{:x}\n", pfn).expect("failed to write to page_numbers");
+            writer.seek(SeekFrom::Start((pfn * page_size) as u64)).expect("seek failed");
             // write page content
             self.write_from_memory(
                 GuestAddress(pfn * page_size),
@@ -387,6 +409,15 @@ impl GuestMemory {
         let mut start = 0usize;
         let mut test = 1usize;
         let mut ri = 0usize; // index into self.regions
+        let mut gpfn_recorder = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("page_numbers")
+            .expect("failed to open page_numbers");
+        for i in 0..gpfns.len() {
+            write!(&mut gpfn_recorder, "{:x}\n", gpfns[i]).expect("failed to write to page_numbers");
+        }
         loop {
             // find the end of current dump region
             while test < gpfns.len() && gpfns[test] - gpfns[test-1] == 1
@@ -409,6 +440,23 @@ impl GuestMemory {
             while gpfns[start] * page_size >= region_end(&self.regions[ri]).offset() {
                 ri += 1;
             }
+        }
+        Ok(())
+    }
+
+    /// read from the provided memory dump file into guest memory
+    pub fn load_initialized_memory<F>(&self, reader: &mut F) -> Result<()>
+    where
+        F: Read,
+    {
+        let page_size = 4096usize;
+        let buf = &mut [0u8; 8usize];
+        // the loop should break out upon UnexpectedEof when the end is reached
+        while reader.read_exact(buf).is_ok() {
+            let gpfn = usize::from_le_bytes(*buf);
+            reader.read_exact(buf).map_err(|e| Error::IoError(e))?;
+            let cnt = usize::from_le_bytes(*buf);
+            self.read_to_memory(GuestAddress(gpfn * page_size), reader, cnt * page_size)?;
         }
         Ok(())
     }

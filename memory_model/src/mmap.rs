@@ -121,6 +121,8 @@ impl MemoryMapping {
         if addr == libc::MAP_FAILED {
             return Err(Error::SystemCallFailed(io::Error::last_os_error()));
         }
+        // if this assertion fails, we are not 2MB aligned.
+        //assert!((addr as libc::uintptr_t)/(1 << 20) == 0);
         Ok(MemoryMapping {
             addr: addr as *mut u8,
             size,

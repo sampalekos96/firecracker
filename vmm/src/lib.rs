@@ -628,6 +628,9 @@ struct Vmm {
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
 
+    // Start timestamp passed in from firerunner
+    start_monotime_us: u64,
+    start_cputime_us: u64,
     // Snapshot
     // load
     load_dir: Option<PathBuf>,
@@ -638,6 +641,7 @@ struct Vmm {
     snap_receiver: Option<Receiver<VcpuInfo>>,
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
+    copy: bool,
 
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
@@ -673,17 +677,23 @@ impl Vmm {
         let kvm = KvmContext::new()?;
         let vm = Vm::new(kvm.fd()).map_err(Error::Vm)?;
 
+        let start_monotime_us = api_shared_info.read().expect("Failed to read shared info").start_monotime_us;
+        let start_cputime_us = api_shared_info.read().expect("Failed to read shared info").start_cputime_us;
         // Snapshot
         let mut load_dir
             = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
         let dump_dir 
             = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
+        let copy = api_shared_info.read().expect("Failed to read shared info").memory_copy;
         let snap_to_load = match load_dir {
             Some(ref mut dir) => {
                 dir.push("snapshot.json");
+                let t0 = now_monotime_us();
                 let reader = BufReader::new(File::open(dir.as_path())
                                             .expect("Failed to open snapshot.json"));
                 let snapshot: Snapshot = serde_json::from_reader(reader).expect("Bad snapshot.json");
+                let t1 = now_monotime_us();
+                println!("reading in and parsing snapshot.json took {} us", t1-t0);
                 Some(snapshot)
             },
             None => None,
@@ -732,6 +742,8 @@ impl Vmm {
             from_api,
             write_metrics_event,
             seccomp_level,
+            start_monotime_us,
+            start_cputime_us,
             load_dir,
             snap_to_load,
             dump_dir,
@@ -739,6 +751,7 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
+            copy,
             ready_notifier,
             notifier_id,
         })
@@ -994,10 +1007,10 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if self.load_dir.is_some() {
-            self.load_dir.as_mut().unwrap().set_file_name("runtime_mem_dump");
+            self.load_dir.as_mut().unwrap().pop();
             self.guest_memory = 
                 //Some(GuestMemory::new_from_file(&arch_mem_regions, self.load_dir.as_ref().unwrap()).map_err(StartMicrovmError::GuestMemory)?);
-                Some(GuestMemory::new_from_shm(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_shm(&arch_mem_regions, self.load_dir.as_mut().unwrap(), self.copy).map_err(StartMicrovmError::GuestMemory)?);
                 //Some(GuestMemory::new_from_hugetlbfs(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
@@ -1331,8 +1344,8 @@ impl Vmm {
             ));
         }
         let request_ts = TimestampUs {
-            time_us: now_monotime_us(),
-            cputime_us: now_cputime_us(),
+            time_us: self.start_monotime_us,
+            cputime_us: self.start_cputime_us,
         };
 
         self.check_health()
@@ -1412,6 +1425,7 @@ impl Vmm {
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         let t3 = now_monotime_us();
+        // this println! is fast and does not affect total boot latency measurement
         println!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
@@ -1613,16 +1627,17 @@ impl Vmm {
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
 
-                self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
+                //self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
                 //self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
                 //self.vm.dump_memory_whole(self.dump_dir.as_ref().unwrap());
-                self.vm.dump_memory_to_shm();
+                self.vm.dump_memory_to_shm(self.dump_dir.as_mut().unwrap());
                 //self.vm.dump_memory_to_hugetlbfs();
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
                 self.vm.dump_clock(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed to dump clock");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
+                //self.dump_dir.as_mut().unwrap().push("snapshot.json");
                 self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
