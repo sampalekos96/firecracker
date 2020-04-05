@@ -1383,6 +1383,9 @@ impl Vmm {
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+        self.epoll_context.disable_stdin_event();
+
+
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
