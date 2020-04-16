@@ -74,6 +74,7 @@ use fc_util::{now_monotime_us, now_cputime_us};
 use kernel::cmdline as kernel_cmdline;
 use kernel::loader as kernel_loader;
 use kvm::*;
+use kvm_bindings::kvm_vcpu_config;
 use logger::error::LoggerError;
 use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory};
@@ -642,6 +643,8 @@ struct Vmm {
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
     copy: bool,
+    hugepage: bool,
+    gpas: Vec<u64>,
 
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
@@ -685,6 +688,8 @@ impl Vmm {
         let dump_dir 
             = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
         let copy = api_shared_info.read().expect("Failed to read shared info").memory_copy;
+        let hugepage = api_shared_info.read().expect("Failed to read shared info").hugepage;
+        let gpas = api_shared_info.read().expect("Failed to read shared info").gpas.clone();
         let snap_to_load = match load_dir {
             Some(ref mut dir) => {
                 dir.push("snapshot.json");
@@ -752,8 +757,10 @@ impl Vmm {
             snap_sender,
             snap_evt,
             copy,
+            hugepage,
             ready_notifier,
             notifier_id,
+            gpas,
         })
     }
 
@@ -1006,12 +1013,20 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        if self.load_dir.is_some() {
-            self.load_dir.as_mut().unwrap().pop();
+        if let Some(ref mut dir) = self.load_dir {
+            // file name is set to snapshot.json in Vmm::new, so pop it out
+            dir.pop();
+            // build file path
+            let basename = dir.file_name().unwrap().to_str().unwrap();
+            let mut path = if self.hugepage {
+                PathBuf::from("/dev/hugepages") 
+            } else {
+                PathBuf::from("/dev/shm")
+            };
+            path.push(basename);
             self.guest_memory = 
-                //Some(GuestMemory::new_from_file(&arch_mem_regions, self.load_dir.as_ref().unwrap()).map_err(StartMicrovmError::GuestMemory)?);
-                Some(GuestMemory::new_from_shm(&arch_mem_regions, self.load_dir.as_mut().unwrap(), self.copy).map_err(StartMicrovmError::GuestMemory)?);
-                //Some(GuestMemory::new_from_hugetlbfs(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.hugepage, self.copy).map_err(StartMicrovmError::GuestMemory)?);
+                //Some(GuestMemory::new_from_shm(&arch_mem_regions, self.load_dir.as_mut().unwrap(), self.copy).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
@@ -1107,10 +1122,25 @@ impl Vmm {
             .as_ref()
             .ok_or(StartMicrovmError::DeviceManager)?;
 
+        let vec_size_bytes = 
+            std::mem::size_of::<kvm_vcpu_config>() + (self.gpas.len() * std::mem::size_of::<u64>());
+        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
+        #[allow(clippy::cast_ptr_alignment)]
+        let vcpu_config: &mut kvm_vcpu_config = unsafe {
+            &mut *(vec.as_ptr() as *mut kvm_vcpu_config)
+        };
+        unsafe { vcpu_config.gpas.as_mut_slice(self.gpas.len()).copy_from_slice(&self.gpas) };
+        vcpu_config.ngpas = self.gpas.len() as u32;
+        //unsafe {
+        //    for i in 0..self.gpas.len() {
+        //        println!("{}", vcpu_config.gpas.as_slice(self.gpas.len())[i]);
+        //    }
+        //}
         for cpu_id in 0..vcpu_count {
             let io_bus = self.legacy_device_manager.io_bus.clone();
             let mmio_bus = device_manager.bus.clone();
-            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
+            vcpu_config.id = cpu_id as u32;
+            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone(), vcpu_config)
                 .map_err(StartMicrovmError::Vcpu)?;
 
             let maybe_vcpu_state = match self.snap_to_load.as_ref() {

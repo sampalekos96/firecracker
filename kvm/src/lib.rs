@@ -590,10 +590,10 @@ impl VmFd {
     /// # Errors
     /// Returns an error when the VM fd is invalid or the VCPU memory cannot be mapped correctly.
     ///
-    pub fn create_vcpu(&self, id: u8) -> Result<VcpuFd> {
+    pub fn create_vcpu(&self, vcpu_config: &kvm_vcpu_config) -> Result<VcpuFd> {
         // Safe because we know that vm is a VM fd and we verify the return result.
         #[allow(clippy::cast_lossless)]
-        let vcpu_fd = unsafe { ioctl_with_val(&self.vm, KVM_CREATE_VCPU(), id as c_ulong) };
+        let vcpu_fd = unsafe { ioctl_with_ref(&self.vm, KVM_CREATE_VCPU(), vcpu_config) };
         if vcpu_fd < 0 {
             return Err(io::Error::last_os_error());
         }

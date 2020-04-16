@@ -6,7 +6,7 @@ authors = ["The Chromium OS Authors"]
 [dependencies]
 byteorder = "=1.2.1"
 libc = ">=0.2.39"
-kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
+kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "kvm_vcpu_config" }
 
 arch_gen = { path = "../arch_gen" }
 kvm = { path = "../kvm" }

@@ -26,6 +26,7 @@ use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, k
     kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs, kvm_clock_data,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
+    kvm_vcpu_config,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -259,22 +260,24 @@ impl Vm {
             .expect("Failed to write runtime_mem_dump");
     }
 
-    pub fn dump_memory_whole(&self, path: &PathBuf) {
-        let mem_dump = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(path.as_path())
-            .expect("Failed to open runtime_mem_dump");
-        mem_dump.set_len(self.guest_mem.as_ref().unwrap().end_addr().offset() as u64).expect("File::set_len failed");
-        let writer = &mut BufWriter::new(mem_dump);
-        self.guest_mem.as_ref().unwrap().dump_whole_memory(writer)
-            .expect("Failed to write runtime_mem_dump");
-    }
+    //pub fn dump_memory_whole(&self, path: &PathBuf) {
+    //    let mem_dump = std::fs::OpenOptions::new()
+    //        .write(true)
+    //        .truncate(true)
+    //        .create(true)
+    //        .open(path.as_path())
+    //        .expect("Failed to open runtime_mem_dump");
+    //    mem_dump.set_len(self.guest_mem.as_ref().unwrap().end_addr().offset() as u64).expect("File::set_len failed");
+    //    let writer = &mut BufWriter::new(mem_dump);
+    //    self.guest_mem.as_ref().unwrap().dump_whole_memory(writer)
+    //        .expect("Failed to write runtime_mem_dump");
+    //}
 
     /// Dump memory to named shared memory
     pub fn dump_memory_to_shm(&self, dump_dir: &mut PathBuf) {
+        // build shared memory file name
         let name = dump_dir.file_name().unwrap().to_str().unwrap();
+        // open shared memory file
         let shm_fd = unsafe {
             libc::shm_open(
                 std::ffi::CString::new(name).expect("CString::new failed").as_ptr(),
@@ -298,9 +301,9 @@ impl Vm {
     }
 
     /// Dump memory to hugetlbfs
-    pub fn dump_memory_to_hugetlbfs(&self) {
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_hugetlbfs();
-    }
+    //pub fn dump_memory_to_hugetlbfs(&self) {
+    //    self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_hugetlbfs();
+    //}
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
         let mut irqchip = kvm_irqchip {
@@ -432,8 +435,9 @@ impl Vcpu {
         io_bus: devices::Bus,
         mmio_bus: devices::Bus,
         create_ts: TimestampUs,
+        vcpu_config: &kvm_vcpu_config,
     ) -> Result<Self> {
-        let kvm_vcpu = vm.fd.create_vcpu(id).map_err(Error::VcpuFd)?;
+        let kvm_vcpu = vm.fd.create_vcpu(vcpu_config).map_err(Error::VcpuFd)?;
 
         // Initially the cpuid per vCPU is the one supported by this VM.
         Ok(Vcpu {
@@ -646,14 +650,14 @@ impl Vcpu {
                         //if from_snapshot {
                             super::Vmm::log_boot_time(&self.create_ts);
                         //}
-                        //if let Some(mut notifier) = ready_notifier.as_ref() {
-                        //    notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
-                        //}
+                        if let Some(mut notifier) = ready_notifier.as_ref() {
+                            notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                        }
                         //unsafe {
                         //    restored_time_1 = now_monotime_us();
                         //    restored_cputime_1 = now_cputime_us();
                         //}
-                        //return Err(Error::VcpuUnhandledKvmExit)
+                        return Err(Error::VcpuUnhandledKvmExit)
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
                         unsafe {

@@ -25,7 +25,7 @@ ioctl_io_nr!(KVM_CHECK_EXTENSION, KVMIO, 0x03);
 ioctl_io_nr!(KVM_GET_VCPU_MMAP_SIZE, KVMIO, 0x04);
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 ioctl_iowr_nr!(KVM_GET_SUPPORTED_CPUID, KVMIO, 0x05, kvm_cpuid2);
-ioctl_io_nr!(KVM_CREATE_VCPU, KVMIO, 0x41);
+ioctl_iow_nr!(KVM_CREATE_VCPU, KVMIO, 0x41, kvm_vcpu_config);
 ioctl_iow_nr!(KVM_GET_DIRTY_LOG, KVMIO, 0x42, kvm_dirty_log);
 ioctl_iow_nr!(
     KVM_SET_USER_MEMORY_REGION,

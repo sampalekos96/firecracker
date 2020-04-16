@@ -81,13 +81,18 @@ impl MemoryMapping {
     ///
     /// # Arguments
     /// * `size` - Size of memory region in bytes.
-    pub fn new_from_file(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
+    pub fn new_from_file(size: usize, fd: RawFd, offset: usize, hugepage: bool, share: bool) -> Result<MemoryMapping> {
+        let mut flags = libc::MAP_NORESERVE;
+        if hugepage {
+            flags |= libc::MAP_HUGETLB;
+        }
+        flags |= if share { libc::MAP_SHARED } else { libc::MAP_PRIVATE };
         let addr = unsafe {
             libc::mmap(
                 null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_HUGETLB | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                flags,
                 fd,
                 offset as libc::off_t,
             )
