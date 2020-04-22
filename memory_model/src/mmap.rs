@@ -106,60 +106,6 @@ impl MemoryMapping {
         })
     }
 
-    /// Creates a private mapping of `size` bytes backed by the provided shared memory object
-    ///
-    /// # Arguments
-    /// * `size` - Size of memory region in bytes.
-    pub fn new_from_shm_open(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
-        // This is safe because we are creating an anonymous mapping in a place not already used by
-        // any other area in this process.
-        let addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                fd,
-                offset as libc::off_t,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
-        }
-        // if this assertion fails, we are not 2MB aligned.
-        //assert!((addr as libc::uintptr_t)/(1 << 20) == 0);
-        Ok(MemoryMapping {
-            addr: addr as *mut u8,
-            size,
-        })
-    }
-
-    /// Creates a private mapping of `size` bytes backed by the provided hugetlbfs file
-    ///
-    /// # Arguments
-    /// * `size` - Size of memory region in bytes.
-    pub fn new_from_hugetlbfs(size: usize, offset: usize, fd: RawFd) -> Result<MemoryMapping> {
-        // This is safe because we are creating an anonymous mapping in a place not already used by
-        // any other area in this process.
-        let addr = unsafe {
-            libc::mmap(
-                null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_HUGETLB | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                fd,
-                offset as libc::off_t,
-            )
-        };
-        if addr == libc::MAP_FAILED {
-            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
-        }
-        Ok(MemoryMapping {
-            addr: addr as *mut u8,
-            size,
-        })
-    }
-
     /// Returns a pointer to the beginning of the memory region.  Should only be
     /// used for passing this region to ioctls for setting guest memory.
     pub fn as_ptr(&self) -> *mut u8 {
