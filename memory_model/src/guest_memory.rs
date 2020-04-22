@@ -97,12 +97,35 @@ impl GuestMemory {
         })
     }
 
-    /// Creates a container for guest memory regions MAP_PRIVATE from the provided named shared
-    /// memory object.
-    /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
+    /// Creates a container for guest memory regions MAP_PRIVATE from the provided memory dump file
+    /// `path`: path to the memory dump file
+    /// `hugepage`: use MAP_HUGETLB when creating memory mappings
+    /// `copy`: create anonymous memory and then copy content from the memory dump into the new
+    /// mappings
     pub fn new_from_file(ranges: &[(GuestAddress, usize)], path: &PathBuf, hugepage: bool, copy: bool) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
+        }
+
+        if copy {
+            // we are copying memory
+            // allocate anonymous memory
+            let guest_mem = GuestMemory::new(ranges).expect("Failed to create new guest memory");
+            // open the named shared memory file
+            let mut memory_dump = File::open(path).expect("Failed to open memory dump");
+            // open the file contain page numbers
+            let mut dir = PathBuf::from(path.file_name().unwrap().to_str().unwrap());
+            dir.push("page_numbers");
+            let page_numbers = BufReader::new(File::open(dir).expect("Failed to open page_numbers")).lines();
+            // load memory dump
+            let page_size = 4096;
+            for line in page_numbers {
+                let page_number = line.expect("Failed to read a page number")
+                    .parse::<usize>().expect("Failed to parse a page number");
+                memory_dump.seek(SeekFrom::Start((page_size * page_number) as u64)).expect("seek failed");
+                guest_mem.read_to_memory(GuestAddress(page_size*page_number), &mut memory_dump, page_size)?;
+            }
+            return Ok(guest_mem);
         }
 
         let mut regions = Vec::<MemoryRegion>::new();
@@ -119,103 +142,6 @@ impl GuestMemory {
             }
 
             let mapping = MemoryMapping::new_from_file(range.1, fd, range.0.offset(), hugepage, false)
-                .map_err(Error::MemoryMappingFailed)?;
-            regions.push(MemoryRegion {
-                mapping,
-                guest_base: range.0,
-            });
-        }
-
-        Ok(GuestMemory {
-            regions: Arc::new(regions),
-        })
-    }
-
-    /// Creates a container for guest memory regions MAP_PRIVATE from the provided named shared
-    /// memory object.
-    pub fn new_from_shm(ranges: &[(GuestAddress, usize)], load_dir: &mut PathBuf, copy: bool) -> Result<GuestMemory> {
-        if ranges.is_empty() {
-            return Err(Error::NoMemoryRegions);
-        }
-
-        let mut regions = Vec::<MemoryRegion>::new();
-        let mut shm_name = String::from("/");
-        shm_name.push_str(load_dir.file_name().unwrap().to_str().unwrap());
-        let shm_fd = unsafe {
-            libc::shm_open(
-                std::ffi::CString::new(shm_name.as_str()).expect("CString::new failed").as_ptr(),
-                libc::O_RDWR,
-                libc::S_IRWXO)
-        };
-
-        if copy {
-            // we are copying memory
-            // allocate anonymous memory
-            let guest_mem = GuestMemory::new(ranges).expect("Failed to create new guest memory");
-            // open the named shared memory file
-            let mut shm_file_name = String::from("/dev/shm");
-            shm_file_name.push_str(shm_name.as_str());
-            let mut shm_file = File::open(shm_file_name).expect("Failed to open shared memory file");
-            // open the file contain page numbers
-            load_dir.set_file_name("page_numbers");
-            let page_numbers = BufReader::new(File::open(load_dir.as_path()).expect("Failed to open page_numbers")).lines();
-            // load memory dump
-            let page_size = 4096;
-            for line in page_numbers {
-                let page_number = line.expect("Failed to read a page number")
-                    .parse::<usize>().expect("Failed to parse a page number");
-                shm_file.seek(SeekFrom::Start((page_size * page_number) as u64)).expect("seek failed");
-                guest_mem.read_to_memory(GuestAddress(page_size*page_number), &mut shm_file, page_size)?;
-            }
-            return Ok(guest_mem);
-        }
-
-        for range in ranges.iter() {
-            if let Some(last) = regions.last() {
-                if last
-                    .guest_base
-                    .checked_add(last.mapping.size())
-                    .map_or(true, |a| a > range.0)
-                {
-                    return Err(Error::MemoryRegionOverlap);
-                }
-            }
-
-            let mapping = MemoryMapping::new_from_shm_open(range.1, range.0.offset(), shm_fd)
-                .map_err(Error::MemoryMappingFailed)?;
-            regions.push(MemoryRegion {
-                mapping,
-                guest_base: range.0,
-            });
-        }
-
-        Ok(GuestMemory {
-            regions: Arc::new(regions),
-        })
-    }
-
-    /// Creates a container for guest memory regions MAP_PRIVATE from the provided hugetlbfs file.
-    /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
-    pub fn new_from_hugetlbfs(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
-        if ranges.is_empty() {
-            return Err(Error::NoMemoryRegions);
-        }
-
-        let mut regions = Vec::<MemoryRegion>::new();
-        let fd = File::open("/dev/hugepages/python2-128mb")
-            .expect("File::open failed").into_raw_fd();
-        for range in ranges.iter() {
-            if let Some(last) = regions.last() {
-                if last
-                    .guest_base
-                    .checked_add(last.mapping.size())
-                    .map_or(true, |a| a > range.0)
-                {
-                    return Err(Error::MemoryRegionOverlap);
-                }
-            }
-
-            let mapping = MemoryMapping::new_from_hugetlbfs(range.1, range.0.offset(), fd)
                 .map_err(Error::MemoryMappingFailed)?;
             regions.push(MemoryRegion {
                 mapping,

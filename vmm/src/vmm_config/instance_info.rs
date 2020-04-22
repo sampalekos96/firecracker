@@ -45,11 +45,11 @@ pub struct InstanceInfo {
     /// The start time of this instance CLOCK_PROCESS_CPUTIME
     pub start_cputime_us: u64,
     /// indicates how do we restore from snapshots: memory_copying or not
-    pub memory_copy: bool,
+    //pub memory_copy: bool,
     /// indicates if use hugapages
-    pub hugepage: bool,
+    //pub hugepage: bool,
     /// list of guest physical addresses to be pre-faulted
-    pub gfns_to_pfns: Vec<u64>,
+    //pub gfns_to_pfns: Vec<u64>,
     /// The version of the VMM that runs the microVM.
     pub vmm_version: String,
 }

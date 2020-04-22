@@ -8,8 +8,6 @@
 //! The mmap module provides a safe interface to mmap memory and ensures unmap is called when the
 //! mmap object leaves scope.
 
-extern crate fc_util;
-
 use std;
 use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::fs::File;

@@ -21,7 +21,6 @@ extern crate serde_json;
 extern crate time;
 extern crate timerfd;
 extern crate byteorder;
-extern crate memfd;
 
 extern crate arch;
 #[cfg(target_arch = "x86_64")]
@@ -74,7 +73,6 @@ use fc_util::{now_monotime_us, now_cputime_us};
 use kernel::cmdline as kernel_cmdline;
 use kernel::loader as kernel_loader;
 use kvm::*;
-use kvm_bindings::kvm_vcpu_config;
 use logger::error::LoggerError;
 use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory};
@@ -363,7 +361,6 @@ impl KvmContext {
             return Err(Error::KvmApiVersion(kvm.get_api_version()));
         }
 
-        check_cap(&kvm, Cap::AdjustClock)?;
         check_cap(&kvm, Cap::Xsave)?;
         check_cap(&kvm, Cap::Xcrs)?;
         check_cap(&kvm, Cap::MpState)?;
@@ -642,13 +639,15 @@ struct Vmm {
     snap_receiver: Option<Receiver<VcpuInfo>>,
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
-    copy: bool,
-    hugepage: bool,
-    gfns_to_pfns: Vec<u64>,
 
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
     notifier_id: u32,
+
+    // restore memory by copying
+    copy_memory: bool,
+    // use huge pages to back guest memory
+    hugepage: bool,
 }
 
 impl Vmm {
@@ -661,6 +660,8 @@ impl Vmm {
         second_input: Option<File>,
         ready_notifier: Option<File>,
         notifier_id: u32,
+        hugepage: bool,
+        copy_memory: bool,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -687,9 +688,6 @@ impl Vmm {
             = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
         let dump_dir 
             = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
-        let copy = api_shared_info.read().expect("Failed to read shared info").memory_copy;
-        let hugepage = api_shared_info.read().expect("Failed to read shared info").hugepage;
-        let gfns_to_pfns = api_shared_info.read().expect("Failed to read shared info").gfns_to_pfns.clone();
         let snap_to_load = match load_dir {
             Some(ref mut dir) => {
                 dir.push("snapshot.json");
@@ -756,11 +754,10 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
-            copy,
-            hugepage,
             ready_notifier,
             notifier_id,
-            gfns_to_pfns,
+            copy_memory,
+            hugepage,
         })
     }
 
@@ -1025,8 +1022,7 @@ impl Vmm {
             };
             path.push(basename);
             self.guest_memory = 
-                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.hugepage, self.copy).map_err(StartMicrovmError::GuestMemory)?);
-                //Some(GuestMemory::new_from_shm(&arch_mem_regions, self.load_dir.as_mut().unwrap(), self.copy).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.hugepage, self.copy_memory).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
@@ -1122,20 +1118,10 @@ impl Vmm {
             .as_ref()
             .ok_or(StartMicrovmError::DeviceManager)?;
 
-        let vec_size_bytes = 
-            std::mem::size_of::<kvm_vcpu_config>() + (self.gfns_to_pfns.len() * std::mem::size_of::<u64>());
-        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
-        #[allow(clippy::cast_ptr_alignment)]
-        let vcpu_config: &mut kvm_vcpu_config = unsafe {
-            &mut *(vec.as_ptr() as *mut kvm_vcpu_config)
-        };
-        unsafe { vcpu_config.gfns_to_pfns.as_mut_slice(self.gfns_to_pfns.len()).copy_from_slice(&self.gfns_to_pfns) };
-        vcpu_config.ngfns = self.gfns_to_pfns.len() as u32 / 2;
         for cpu_id in 0..vcpu_count {
             let io_bus = self.legacy_device_manager.io_bus.clone();
             let mmio_bus = device_manager.bus.clone();
-            vcpu_config.id = cpu_id as u32;
-            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone(), vcpu_config)
+            let mut vcpu = Vcpu::new(cpu_id, &self.vm, io_bus, mmio_bus, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
 
             let maybe_vcpu_state = match self.snap_to_load.as_ref() {
@@ -1395,12 +1381,6 @@ impl Vmm {
 
         let mut entry_addr = GuestAddress(0);
         if let Some(ref mut dir) = self.load_dir {
-            //dir.set_file_name("runtime_mem_dump");
-            //let t0 = now_monotime_us();
-            //let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
-            //let reader = &mut BufReader::new(mem_dump);
-            //self.guest_memory.clone().unwrap().load_initialized_memory(reader)
-            //    .expect("Failed to load memory dump");
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
@@ -1416,7 +1396,6 @@ impl Vmm {
             };
             self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
                 .set_serial_state(serial_state);
-            self.vm.load_clock(self.snap_to_load.as_ref().unwrap()).expect("KVM_SET_CLOCK ioctl failed");
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1652,17 +1631,10 @@ impl Vmm {
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
 
-                //self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
-                //self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
-                //self.vm.dump_memory_whole(self.dump_dir.as_ref().unwrap());
                 self.vm.dump_memory_to_shm(self.dump_dir.as_mut().unwrap());
-                //self.vm.dump_memory_to_hugetlbfs();
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
-                self.vm.dump_clock(self.snap_to_dump.as_mut().unwrap())
-                    .expect("Failed to dump clock");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
-                //self.dump_dir.as_mut().unwrap().push("snapshot.json");
                 self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
@@ -2248,13 +2220,16 @@ pub fn start_vmm_thread(
     second_input: Option<File>,
     ready_notifier: Option<File>,
     notifier_id: u32,
+    hugepage: bool,
+    copy_memory: bool,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
             let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
-                                   second_serial, second_input, ready_notifier, notifier_id)
+                                   second_serial, second_input, ready_notifier, notifier_id,
+                                   hugepage, copy_memory)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {

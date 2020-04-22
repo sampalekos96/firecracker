@@ -23,10 +23,9 @@ use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
 use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
-    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs, kvm_clock_data,
+    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs,
     KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
-    kvm_vcpu_config,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
@@ -132,7 +131,7 @@ pub struct IoapicState {
    pub pad: u32,
    pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
 }
-    
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct VirtioState {
     pub queues: Vec<devices::virtio::queue::Queue>
@@ -140,12 +139,11 @@ pub struct VirtioState {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
-    pub clock: kvm_clock_data,
     pub ioapic: IoapicState,
     pub pic_master: kvm_pic_state,
     pub pic_slave: kvm_pic_state,
     // TODO: currently only block devices
-    pub virtio_states: Vec<VirtioState>, 
+    pub virtio_states: Vec<VirtioState>,
     pub vcpu_states: Vec<VcpuState>,
 }
 
@@ -236,14 +234,11 @@ impl Vm {
             self.fd.set_user_memory_region(memory_region)
         })?;
         self.guest_mem = Some(guest_mem);
-        //let t1 = now_monotime_us();
 
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(GuestAddress(arch::x86_64::layout::KVM_TSS_ADDRESS).offset())
             .map_err(Error::VmSetup)?;
-        //let t2 = now_monotime_us();
-        //println!("set_user_memory_region took {}us, set_tss_address took {} us", t1-t0, t2-t1);
         Ok(())
     }
 
@@ -260,20 +255,7 @@ impl Vm {
             .expect("Failed to write runtime_mem_dump");
     }
 
-    //pub fn dump_memory_whole(&self, path: &PathBuf) {
-    //    let mem_dump = std::fs::OpenOptions::new()
-    //        .write(true)
-    //        .truncate(true)
-    //        .create(true)
-    //        .open(path.as_path())
-    //        .expect("Failed to open runtime_mem_dump");
-    //    mem_dump.set_len(self.guest_mem.as_ref().unwrap().end_addr().offset() as u64).expect("File::set_len failed");
-    //    let writer = &mut BufWriter::new(mem_dump);
-    //    self.guest_mem.as_ref().unwrap().dump_whole_memory(writer)
-    //        .expect("Failed to write runtime_mem_dump");
-    //}
-
-    /// Dump memory to named shared memory
+    /// Dump memory to `/dev/shm`
     pub fn dump_memory_to_shm(&self, dump_dir: &mut PathBuf) {
         // build shared memory file name
         let name = dump_dir.file_name().unwrap().to_str().unwrap();
@@ -300,15 +282,10 @@ impl Vm {
             .expect("Failed to write /dev/shm");
     }
 
-    /// Dump memory to hugetlbfs
-    //pub fn dump_memory_to_hugetlbfs(&self) {
-    //    self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_hugetlbfs();
-    //}
-
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
         let mut irqchip = kvm_irqchip {
             chip_id: KVM_IRQCHIP_IOAPIC,
-            ..Default::default() 
+            ..Default::default()
         };
         let ioapic = &snapshot.ioapic;
         unsafe {
@@ -345,21 +322,6 @@ impl Vm {
         snapshot.pic_slave = get_pic_state(&self.fd, false)?;
 
         Ok(())
-    }
-
-    /// This function dumps kvm_clock_data
-    pub fn dump_clock(&self, snapshot: &mut Snapshot) -> result::Result<(), io::Error> {
-        let mut clock = kvm_clock_data::default();
-        self.fd.get_clock(&mut clock)?;
-        clock.flags = 0; // set to zero since we want to load the clock directly
-        snapshot.clock = clock;
-
-        Ok(())
-    }
-
-    /// This function loads kvm_clock_data
-    pub fn load_clock(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
-        self.fd.set_clock(&snapshot.clock)
     }
 
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
@@ -435,9 +397,8 @@ impl Vcpu {
         io_bus: devices::Bus,
         mmio_bus: devices::Bus,
         create_ts: TimestampUs,
-        vcpu_config: &kvm_vcpu_config,
     ) -> Result<Self> {
-        let kvm_vcpu = vm.fd.create_vcpu(vcpu_config).map_err(Error::VcpuFd)?;
+        let kvm_vcpu = vm.fd.create_vcpu(id).map_err(Error::VcpuFd)?;
 
         // Initially the cpuid per vCPU is the one supported by this VM.
         Ok(Vcpu {
@@ -505,7 +466,7 @@ impl Vcpu {
         }
         let xsave = kvm_xsave{ region };
         self.fd.set_xsave(&xsave)?;
-        
+
         self.fd.set_xcrs(&vcpu_state.xcrs)?;
 
         self.fd.set_sregs(&vcpu_state.sregs)?;

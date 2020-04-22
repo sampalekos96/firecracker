@@ -372,24 +372,6 @@ impl VmFd {
             Err(io::Error::last_os_error())
         }
     }
-    /// KVM_GET_CLOCK
-    pub fn get_clock(&self, clock: &mut kvm_clock_data) -> Result<()> {
-        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_CLOCK(), clock) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-    /// KVM_SET_CLOCK
-    pub fn set_clock(&self, clock: &kvm_clock_data) -> Result<()> {
-        let ret = unsafe { ioctl_with_ref(self, KVM_SET_CLOCK(), clock) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
 
     /// Creates/modifies a guest physical memory slot using `KVM_SET_USER_MEMORY_REGION`.
     ///
@@ -590,10 +572,10 @@ impl VmFd {
     /// # Errors
     /// Returns an error when the VM fd is invalid or the VCPU memory cannot be mapped correctly.
     ///
-    pub fn create_vcpu(&self, vcpu_config: &kvm_vcpu_config) -> Result<VcpuFd> {
+    pub fn create_vcpu(&self, id: u8) -> Result<VcpuFd> {
         // Safe because we know that vm is a VM fd and we verify the return result.
         #[allow(clippy::cast_lossless)]
-        let vcpu_fd = unsafe { ioctl_with_ref(&self.vm, KVM_CREATE_VCPU(), vcpu_config) };
+        let vcpu_fd = unsafe { ioctl_with_val(&self.vm, KVM_CREATE_VCPU(), id as c_ulong) };
         if vcpu_fd < 0 {
             return Err(io::Error::last_os_error());
         }
