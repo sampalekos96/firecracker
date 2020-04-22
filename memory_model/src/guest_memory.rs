@@ -201,41 +201,6 @@ impl GuestMemory {
         self.regions.len()
     }
 
-    // Helper function to `pub fn get_pagemap()`
-    // return a mapping from host physical page numbers to guest physical page numbers
-    // for the given virtual address range
-    //fn get_pagemap_addr_range(
-    //    pfn_to_gfn: bool,
-    //    page_i_base: u64,
-    //    page_size: u64,
-    //    addr: u64,
-    //    size: u64,
-    //) -> BTreeMap<u64, u64> {
-    //    const PM_ENTRY_SIZE:u64 = 8;
-    //    let path = format!("/proc/{}/pagemap", std::process::id());
-    //    let offset = addr/page_size*PM_ENTRY_SIZE;
-
-    //    let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
-    //    pagemap.seek(SeekFrom::Start(offset)).expect("Failed to seek /proc/PID/pagemap");
-
-    //    let num_pages = (size / page_size) as usize;
-    //    let mut buf = [0 as u8; 8];
-    //    let mut mapping = BTreeMap::new();
-    //    for page_i in 0..num_pages {
-    //        pagemap.read_exact(&mut buf).err();
-    //        let entry = u64::from_le_bytes(buf);
-    //        // check if the page is present
-    //        if get_bit(entry, 63) == 1 {
-    //            if pfn_to_gfn {
-    //                mapping.insert(GuestMemory::get_pfn(entry), page_i_base + page_i as u64);
-    //            } else {
-    //                mapping.insert(page_i_base + page_i as u64, GuestMemory::get_pfn(entry));
-    //            }
-    //        }
-    //    }
-    //    mapping
-    //}
-
     /// Read /proc/PID/pagemap,
     /// if `pfn_to_gfn` is true, return a mapping from host physical page numbers to
     /// guest physical page numbers;
@@ -245,47 +210,17 @@ impl GuestMemory {
         let mut mapping = BTreeMap::new();
         let mut page_i_base = 0u64;
         for region in self.regions.iter() {
-            mapping.append(&mut region.mapping.get_pagemap(false, page_i_base, page_size));
+            mapping.append(&mut region.mapping.get_pagemap(pfn_to_gfn, page_i_base, page_size));
             page_i_base += region.mapping.size() as u64 / page_size;
         }
         mapping
     }
 
-    /// dump_initialized_memory_to_hugetlbfs writes initialized memory pages to the file
-    /// pointed to by `fd`.
-    //pub fn dump_initialized_memory_to_hugetlbfs(&self) -> Result<()>
-    //{
-    //    let fd = unsafe {
-    //        libc::open(
-    //            std::ffi::CString::new("/dev/hugepages/python2-128mb").expect("CString::new failed").as_ptr(),
-    //            libc::O_RDWR | libc::O_CREAT,
-    //            libc::S_IRWXO)
-    //    };
-
-    //    if fd < 0 {
-    //        return Err(Error::IoError(std::io::Error::last_os_error()));
-    //    }
-
-    //    let mapping = MemoryMapping::new_from_file(self.end_addr().offset(), 0, fd)
-    //        .expect("MemoryMapping::new_from_file failed");
-    //    let page_size = 4096usize;
-    //    let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
-    //    gpfns.as_mut_slice().sort();
-    //    for pfn in gpfns {
-    //        // write page content
-    //        let offset = pfn * page_size;
-    //        unsafe {
-    //            self.read_slice_at_addr(&mut mapping.as_mut_slice()[offset..], GuestAddress(pfn * page_size))?;
-    //        }
-    //    }
-    //    Ok(())
-    //}
-
-    /// Write all initialized guest memory pages to the provided writer.
+    /// Write all initialized guest memory pages out to the writer and the guest physical page
+    /// numbers of these pages to the `page_number_file`.
     /// Here being initialized means being present in physical RAM.
-    /// The writer should be backed by a shared memory of the same size
-    /// of the guest memory.
-    /// Therefore, the initialized pages are written out to the same offset.
+    /// The writer should be backed by a file in `/dev/shm` of the same size
+    /// as the guest memory.
     pub fn dump_initialized_memory_to_shm<F>(&self, writer: &mut F, page_number_file: &mut File) -> Result<()>
     where
         F: Write + Seek,
@@ -302,19 +237,6 @@ impl GuestMemory {
                 page_size as usize
             )?;
         }
-        Ok(())
-    }
-
-    /// Write all guest memory pages initialized or not to the provided writer.
-    /// Here being initialized means being present in physical RAM.
-    pub fn dump_whole_memory<F>(&self, writer: &mut F) -> Result<()>
-    where
-        F: Write + Seek,
-    {
-        self.write_from_memory(
-            GuestAddress(0),
-            writer,
-            self.end_addr().offset())?;
         Ok(())
     }
 
@@ -368,23 +290,6 @@ impl GuestMemory {
 
     /// read from the provided memory dump file into guest memory
     pub fn load_initialized_memory<F>(&self, reader: &mut F) -> Result<()>
-    where
-        F: Read,
-    {
-        let page_size = 4096usize;
-        let buf = &mut [0u8; 8usize];
-        // the loop should break out upon UnexpectedEof when the end is reached
-        while reader.read_exact(buf).is_ok() {
-            let gpfn = usize::from_le_bytes(*buf);
-            reader.read_exact(buf).map_err(|e| Error::IoError(e))?;
-            let cnt = usize::from_le_bytes(*buf);
-            self.read_to_memory(GuestAddress(gpfn * page_size), reader, cnt * page_size)?;
-        }
-        Ok(())
-    }
-
-    /// read from the provided memory dump file into guest memory
-    pub fn load_whole_memory<F>(&self, reader: &mut F) -> Result<()>
     where
         F: Read,
     {
