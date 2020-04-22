@@ -49,7 +49,7 @@ pub struct InstanceInfo {
     /// indicates if use hugapages
     pub hugepage: bool,
     /// list of guest physical addresses to be pre-faulted
-    pub gpas: Vec<u64>,
+    pub gfns_to_pfns: Vec<u64>,
     /// The version of the VMM that runs the microVM.
     pub vmm_version: String,
 }

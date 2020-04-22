@@ -644,7 +644,7 @@ struct Vmm {
     snap_evt: EventFd,
     copy: bool,
     hugepage: bool,
-    gpas: Vec<u64>,
+    gfns_to_pfns: Vec<u64>,
 
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
@@ -689,7 +689,7 @@ impl Vmm {
             = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
         let copy = api_shared_info.read().expect("Failed to read shared info").memory_copy;
         let hugepage = api_shared_info.read().expect("Failed to read shared info").hugepage;
-        let gpas = api_shared_info.read().expect("Failed to read shared info").gpas.clone();
+        let gfns_to_pfns = api_shared_info.read().expect("Failed to read shared info").gfns_to_pfns.clone();
         let snap_to_load = match load_dir {
             Some(ref mut dir) => {
                 dir.push("snapshot.json");
@@ -760,7 +760,7 @@ impl Vmm {
             hugepage,
             ready_notifier,
             notifier_id,
-            gpas,
+            gfns_to_pfns,
         })
     }
 
@@ -1123,19 +1123,14 @@ impl Vmm {
             .ok_or(StartMicrovmError::DeviceManager)?;
 
         let vec_size_bytes = 
-            std::mem::size_of::<kvm_vcpu_config>() + (self.gpas.len() * std::mem::size_of::<u64>());
+            std::mem::size_of::<kvm_vcpu_config>() + (self.gfns_to_pfns.len() * std::mem::size_of::<u64>());
         let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
         #[allow(clippy::cast_ptr_alignment)]
         let vcpu_config: &mut kvm_vcpu_config = unsafe {
             &mut *(vec.as_ptr() as *mut kvm_vcpu_config)
         };
-        unsafe { vcpu_config.gpas.as_mut_slice(self.gpas.len()).copy_from_slice(&self.gpas) };
-        vcpu_config.ngpas = self.gpas.len() as u32;
-        //unsafe {
-        //    for i in 0..self.gpas.len() {
-        //        println!("{}", vcpu_config.gpas.as_slice(self.gpas.len())[i]);
-        //    }
-        //}
+        unsafe { vcpu_config.gfns_to_pfns.as_mut_slice(self.gfns_to_pfns.len()).copy_from_slice(&self.gfns_to_pfns) };
+        vcpu_config.ngfns = self.gfns_to_pfns.len() as u32 / 2;
         for cpu_id in 0..vcpu_count {
             let io_bus = self.legacy_device_manager.io_bus.clone();
             let mmio_bus = device_manager.bus.clone();

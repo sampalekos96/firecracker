@@ -59,11 +59,6 @@ fn region_end(region: &MemoryRegion) -> GuestAddress {
     region.guest_base.unchecked_add(region.mapping.size())
 }
 
-/// utility function to get the bit at `bit_pos` of `num`
-pub fn get_bit(num: u64, bit_pos: u64) -> u64 {
-    (num & (1u64 << bit_pos)) >> bit_pos
-}
-
 /// Tracks all memory regions allocated for the guest in the current process.
 #[derive(Clone)]
 pub struct GuestMemory {
@@ -167,8 +162,8 @@ impl GuestMemory {
             // load memory dump
             let page_size = 4096;
             for line in page_numbers {
-                let page_number = line.expect("Failed to read a page number");
-                let page_number = usize::from_str_radix(page_number.as_str().trim(), 16).expect("Failed to parse a page number");
+                let page_number = line.expect("Failed to read a page number")
+                    .parse::<usize>().expect("Failed to parse a page number");
                 shm_file.seek(SeekFrom::Start((page_size * page_number) as u64)).expect("seek failed");
                 guest_mem.read_to_memory(GuestAddress(page_size*page_number), &mut shm_file, page_size)?;
             }
@@ -280,53 +275,54 @@ impl GuestMemory {
         self.regions.len()
     }
 
-    // Helper function
-    fn get_pfn(num: u64) -> u64 {
-        num & 0x7FFFFFFFFFFFFF
-    }
-
     // Helper function to `pub fn get_pagemap()`
     // return a mapping from host physical page numbers to guest physical page numbers
     // for the given virtual address range
-    fn get_pagemap_addr_range(page_i_base: usize, page_size: u64, addr: u64, size: u64)
-    -> BTreeMap<u64, usize> {
-        const PM_ENTRY_SIZE:u64 = 8;
-        let path = format!("/proc/{}/pagemap", std::process::id());
-        let offset = addr/page_size*PM_ENTRY_SIZE;
+    //fn get_pagemap_addr_range(
+    //    pfn_to_gfn: bool,
+    //    page_i_base: u64,
+    //    page_size: u64,
+    //    addr: u64,
+    //    size: u64,
+    //) -> BTreeMap<u64, u64> {
+    //    const PM_ENTRY_SIZE:u64 = 8;
+    //    let path = format!("/proc/{}/pagemap", std::process::id());
+    //    let offset = addr/page_size*PM_ENTRY_SIZE;
 
-        let mut pagemap = File::open(&path).unwrap();
-        pagemap.seek(SeekFrom::Start(offset)).unwrap_or_default();
+    //    let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
+    //    pagemap.seek(SeekFrom::Start(offset)).expect("Failed to seek /proc/PID/pagemap");
 
-        let num_pages = (size / page_size) as usize;
-        let mut buf = [0 as u8; 8];
-        let mut pfns = BTreeMap::new();
-        for page_i in 0..num_pages {
-            pagemap.read_exact(&mut buf).err();
-            let entry = u64::from_le_bytes(buf);
-            // check if the page is present
-            if get_bit(entry, 63) == 1 {
-                pfns.insert(GuestMemory::get_pfn(entry), page_i_base + page_i);
-            }
-        }
-        pfns
-    }
+    //    let num_pages = (size / page_size) as usize;
+    //    let mut buf = [0 as u8; 8];
+    //    let mut mapping = BTreeMap::new();
+    //    for page_i in 0..num_pages {
+    //        pagemap.read_exact(&mut buf).err();
+    //        let entry = u64::from_le_bytes(buf);
+    //        // check if the page is present
+    //        if get_bit(entry, 63) == 1 {
+    //            if pfn_to_gfn {
+    //                mapping.insert(GuestMemory::get_pfn(entry), page_i_base + page_i as u64);
+    //            } else {
+    //                mapping.insert(page_i_base + page_i as u64, GuestMemory::get_pfn(entry));
+    //            }
+    //        }
+    //    }
+    //    mapping
+    //}
 
-    /// return a mapping from host physical page numbers to guest physical page numbers
-    /// for the entire guest memory
-    pub fn get_pagemap(&self) -> BTreeMap<u64, usize> {
+    /// Read /proc/PID/pagemap,
+    /// if `pfn_to_gfn` is true, return a mapping from host physical page numbers to
+    /// guest physical page numbers;
+    /// otherwise, return a mapping from guest physical numbers to guest physical page numbers
+    pub fn get_pagemap(&self, pfn_to_gfn: bool) -> BTreeMap<u64, u64> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
-        let mut pfns = BTreeMap::new();
-        let mut page_i_base = 0 as usize;
+        let mut mapping = BTreeMap::new();
+        let mut page_i_base = 0u64;
         for region in self.regions.iter() {
-            pfns.append(
-                &mut GuestMemory::get_pagemap_addr_range(page_i_base,
-                                                          page_size,
-                                                          region.mapping.as_ptr() as u64,
-                                                          region.mapping.size() as u64)
-            );
-            page_i_base += region.mapping.size() / page_size as usize;
+            mapping.append(&mut region.mapping.get_pagemap(false, page_i_base, page_size));
+            page_i_base += region.mapping.size() as u64 / page_size;
         }
-        pfns
+        mapping
     }
 
     /// dump_initialized_memory_to_hugetlbfs writes initialized memory pages to the file
@@ -368,17 +364,17 @@ impl GuestMemory {
     where
         F: Write + Seek,
     {
-        let page_size = 4096usize;
-        let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
-        gpfns.as_mut_slice().sort();
-        for pfn in gpfns {
-            write!(page_number_file, "{:x}\n", pfn).expect("failed to write to page_numbers");
-            writer.seek(SeekFrom::Start((pfn * page_size) as u64)).expect("seek failed");
+        let page_size = 4096;
+        let gfns_to_pfns = self.get_pagemap(false);
+        for (gfn, _) in gfns_to_pfns.iter() {
+            write!(page_number_file, "{}\n", gfn).expect("failed to write to page_numbers");
+            writer.seek(SeekFrom::Start((gfn * page_size) as u64)).expect("seek failed");
             // write page content
             self.write_from_memory(
-                GuestAddress(pfn * page_size),
+                GuestAddress((gfn * page_size) as usize),
                 writer,
-                page_size)?;
+                page_size as usize
+            )?;
         }
         Ok(())
     }
@@ -405,40 +401,39 @@ impl GuestMemory {
         F: Write,
     {
         let page_size = 4096usize;
-        let mut gpfns = self.get_pagemap().values().cloned().collect::<Vec<usize>>();
-        gpfns.as_mut_slice().sort();
+        let mut gfns = self.get_pagemap(false).keys().cloned().collect::<Vec<u64>>();
         let mut start = 0usize;
         let mut test = 1usize;
         let mut ri = 0usize; // index into self.regions
-        let mut gpfn_recorder = std::fs::OpenOptions::new()
+        let mut gfn_recorder = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
             .create(true)
             .open("page_numbers")
             .expect("failed to open page_numbers");
-        for i in 0..gpfns.len() {
-            write!(&mut gpfn_recorder, "{:x}\n", gpfns[i]).expect("failed to write to page_numbers");
+        for i in 0..gfns.len() {
+            write!(&mut gfn_recorder, "{:x}\n", gfns[i]).expect("failed to write to page_numbers");
         }
         loop {
             // find the end of current dump region
-            while test < gpfns.len() && gpfns[test] - gpfns[test-1] == 1
-                && gpfns[test] * page_size < region_end(&self.regions[ri]).offset() {
+            while test < gfns.len() && gfns[test] - gfns[test-1] == 1
+                && gfns[test] as usize * page_size < region_end(&self.regions[ri]).offset() {
                 test += 1;
             }
-            writer.write_all(&gpfns[start].to_le_bytes()).map_err(|e| Error::IoError(e))?;
+            writer.write_all(&gfns[start].to_le_bytes()).map_err(|e| Error::IoError(e))?;
             writer.write_all(&(test-start).to_le_bytes()).map_err(|e| Error::IoError(e))?;
             // write page content
             self.write_from_memory(
-                GuestAddress(gpfns[start] * page_size),
+                GuestAddress(gfns[start] as usize * page_size),
                 writer,
                 (test - start) * page_size)?;
             // start a new dump region
             start = test;
             test = start + 1;
-            if start >= gpfns.len() {
+            if start >= gfns.len() {
                 break;
             }
-            while gpfns[start] * page_size >= region_end(&self.regions[ri]).offset() {
+            while gfns[start] as usize * page_size >= region_end(&self.regions[ri]).offset() {
                 ri += 1;
             }
         }

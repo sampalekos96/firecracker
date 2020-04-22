@@ -11,9 +11,11 @@
 extern crate fc_util;
 
 use std;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::fs::File;
 use std::ptr::null_mut;
 use std::os::unix::io::RawFd;
+use std::collections::BTreeMap;
 
 use libc;
 
@@ -171,6 +173,53 @@ impl MemoryMapping {
         self.size
     }
 
+    // Helper function
+    fn get_pfn(num: u64) -> u64 {
+        let mask = 1 << 55 - 1;
+        num & mask
+    }
+
+    // helper function to get the bit at `bit_pos` of `num`
+    fn get_bit(num: u64, bit_pos: u64) -> u64 {
+        (num & (1u64 << bit_pos)) >> bit_pos
+    }
+
+
+    /// return a mapping from host physical page numbers to guest physical page numbers
+    /// for the given virtual address range
+    pub fn get_pagemap(
+        &self,
+        pfn_to_gfn: bool,
+        page_i_base: u64,
+        page_size: u64,
+    ) -> BTreeMap<u64, u64> {
+        const PM_ENTRY_SIZE:u64 = 8;
+        let path = format!("/proc/{}/pagemap", std::process::id());
+        let addr = self.addr as u64;
+        let size = self.size as u64;
+        let offset = addr/page_size*PM_ENTRY_SIZE;
+
+        let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
+        pagemap.seek(SeekFrom::Start(offset)).expect("Failed to seek /proc/PID/pagemap");
+
+        let num_pages = (size / page_size) as usize;
+        let mut buf = [0 as u8; 8];
+        let mut mapping = BTreeMap::new();
+        for page_i in 0..num_pages {
+            pagemap.read_exact(&mut buf).err();
+            let entry = u64::from_le_bytes(buf);
+            // check if the page is present
+            if MemoryMapping::get_bit(entry, 63) == 1 {
+                let pfn = MemoryMapping::get_pfn(entry);
+                if pfn_to_gfn {
+                    mapping.insert(pfn, page_i_base + page_i as u64);
+                } else {
+                    mapping.insert(page_i_base + page_i as u64, pfn);
+                }
+            }
+        }
+        mapping
+    }
     /// Writes a slice to the memory region at the specified offset.
     /// Returns the number of bytes written.  The number of bytes written can
     /// be less than the length of the slice if there isn't enough room in the
