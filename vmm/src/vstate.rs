@@ -137,13 +137,19 @@ pub struct VirtioState {
     pub queues: Vec<devices::virtio::queue::Queue>
 }
 
+/// Snapshot
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// IOAPIC
     pub ioapic: IoapicState,
+    /// PIC master
     pub pic_master: kvm_pic_state,
+    /// PIC slave
     pub pic_slave: kvm_pic_state,
     // TODO: currently only block devices
+    /// Virtio device
     pub virtio_states: Vec<VirtioState>,
+    /// Vcpu
     pub vcpu_states: Vec<VcpuState>,
 }
 
@@ -255,8 +261,21 @@ impl Vm {
             .expect("Failed to write runtime_mem_dump");
     }
 
+    /// Dump memory to a sparse file
+    pub fn dump_memory_to_sparse_file(&self, mut dir: PathBuf) {
+        dir.push("memory_dump");
+        let mut mem_dump = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(dir)
+            .expect("Failed to open memory_dump to write");
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_sparse_file(&mut mem_dump)
+            .expect("Failed to dump memory to a sparse file");
+    }
+
     /// Dump memory to `/dev/shm`
-    pub fn dump_memory_to_shm(&self, dump_dir: &mut PathBuf) {
+    pub fn dump_memory_to_shm(&self, mut dump_dir:  PathBuf) {
         // build shared memory file name
         let name = dump_dir.file_name().unwrap().to_str().unwrap();
         // open shared memory file
@@ -277,7 +296,7 @@ impl Vm {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(dump_dir.as_path()).expect("Failed to open page_numbers");
+            .open(dump_dir).expect("Failed to open page_numbers");
         self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_shm(writer, &mut page_number_file)
             .expect("Failed to write /dev/shm");
     }

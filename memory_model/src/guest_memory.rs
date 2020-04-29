@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{mem, result};
 use std::collections::BTreeMap;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{IntoRawFd, AsRawFd};
 
 use guest_address::GuestAddress;
 use mmap::{self, MemoryMapping};
@@ -214,6 +214,59 @@ impl GuestMemory {
             page_i_base += region.mapping.size() as u64 / page_size;
         }
         mapping
+    }
+
+    /// Write initialized memory to a sparse file
+    /// The first step is to write down the entire memory
+    /// The second step is to punch holes
+    pub fn dump_initialized_memory_to_sparse_file(&self, writer: &mut File) -> Result<()>
+    {
+        // dump entire memory
+        self.write_from_memory(
+            GuestAddress(0),
+            writer,
+            self.end_addr().offset())?;
+
+        let page_size = 4096usize;
+        let gfns = self.get_pagemap(false).keys().cloned().collect::<Vec<u64>>();
+        let mut test = 1usize;
+        let mut gfn_recorder = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("page_numbers")
+            .expect("failed to open page_numbers");
+        for i in 0..gfns.len() {
+            write!(&mut gfn_recorder, "{:x}\n", gfns[i]).expect("failed to write to page_numbers");
+        }
+        while test < gfns.len() {
+            // find the end of current dump region
+            while test < gfns.len() && gfns[test] - gfns[test-1] == 1 {
+                test += 1;
+            }
+            // punch holes
+            unsafe {
+                let offset = (gfns[test-1] as usize + 1) * page_size;
+                let len = if test < gfns.len() {
+                    (gfns[test] - gfns[test-1] - 1) as usize * page_size
+                } else {
+                    self.end_addr().offset() - (gfns[test-1] as usize + 1) * page_size
+                };
+                if len == 0 {
+                    break;
+                }
+                let r = libc::fallocate(
+                    writer.as_raw_fd(),
+                    libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                    offset as libc::off_t,
+                    len as libc::off_t
+                );
+                if r != 0 {
+                    return Err(Error::IoError(std::io::Error::last_os_error()))
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Write all initialized guest memory pages out to the writer and the guest physical page

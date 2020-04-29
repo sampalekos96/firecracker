@@ -91,7 +91,8 @@ use vmm_config::net::{
 };
 #[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
-use vstate::{Vcpu, Vm, Snapshot, VcpuInfo};
+use vstate::{Vcpu, Vm, VcpuInfo};
+pub use vstate::Snapshot;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -249,6 +250,32 @@ impl Display for VmmActionError {
             VsockConfig(_, ref err) => write!(f, "{}", err.to_string()),
         }
     }
+}
+
+/// SnapFaaS config
+pub struct SnapFaaSConfig {
+    /// snapshot directory to load from
+    pub load_dir: Option<PathBuf>,
+    /// parsed snapshot.json
+    pub parsed_json: Option<Snapshot>,
+    /// memory to load
+    pub memory_to_load: Option<File>,
+    /// directory to dump to
+    pub dump_dir: Option<PathBuf>,
+    /// notifier to send ready signal
+    pub ready_notifier: Option<File>,
+    /// id of this instance
+    pub notifier_id: u32,
+    /// second serial output
+    pub second_serial: Option<File>,
+    /// second serial input
+    pub second_input: Option<File>,
+    /// restore memory by copying
+    pub copy_memory: bool,
+    /// use huge pages
+    pub huge_page: bool,
+    /// use sparse file
+    pub sparse_file: bool,
 }
 
 /// This enum represents the public interface of the VMM. Each action contains various
@@ -646,8 +673,9 @@ struct Vmm {
 
     // restore memory by copying
     copy_memory: bool,
-    // use huge pages to back guest memory
-    hugepage: bool,
+    memory_to_load: Option<File>,
+    huge_page: bool,
+    sparse_file: bool,
 }
 
 impl Vmm {
@@ -656,12 +684,7 @@ impl Vmm {
         api_event_fd: EventFd,
         from_api: Receiver<Box<VmmAction>>,
         seccomp_level: u32,
-        second_serial: Option<File>,
-        second_input: Option<File>,
-        ready_notifier: Option<File>,
-        notifier_id: u32,
-        hugepage: bool,
-        copy_memory: bool,
+        snapfaas_config: SnapFaaSConfig,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -684,23 +707,7 @@ impl Vmm {
         let start_monotime_us = api_shared_info.read().expect("Failed to read shared info").start_monotime_us;
         let start_cputime_us = api_shared_info.read().expect("Failed to read shared info").start_cputime_us;
         // Snapshot
-        let mut load_dir
-            = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
-        let dump_dir 
-            = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
-        let snap_to_load = match load_dir {
-            Some(ref mut dir) => {
-                dir.push("snapshot.json");
-                let t0 = now_monotime_us();
-                let reader = BufReader::new(File::open(dir.as_path())
-                                            .expect("Failed to open snapshot.json"));
-                let snapshot: Snapshot = serde_json::from_reader(reader).expect("Bad snapshot.json");
-                let t1 = now_monotime_us();
-                println!("reading in and parsing snapshot.json took {} us", t1-t0);
-                Some(snapshot)
-            },
-            None => None,
-        };
+        let dump_dir = snapfaas_config.dump_dir;
         let (snap_sender, snap_receiver) = match dump_dir {
             Some(_) => {
                 let (sender, receiver) = channel();
@@ -712,7 +719,7 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
-        match second_input {
+        match snapfaas_config.second_input {
             Some(ref input) => {
                 epoll_context
                     .add_event(input.try_clone()
@@ -733,7 +740,9 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager: LegacyDeviceManager::new(second_serial, second_input).map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager:
+                LegacyDeviceManager::new(snapfaas_config.second_serial, snapfaas_config.second_input)
+                .map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -747,17 +756,19 @@ impl Vmm {
             seccomp_level,
             start_monotime_us,
             start_cputime_us,
-            load_dir,
-            snap_to_load,
+            load_dir: snapfaas_config.load_dir,
+            snap_to_load: snapfaas_config.parsed_json,
             dump_dir,
             snap_to_dump: None,
             snap_receiver,
             snap_sender,
             snap_evt,
-            ready_notifier,
-            notifier_id,
-            copy_memory,
-            hugepage,
+            ready_notifier: snapfaas_config.ready_notifier,
+            notifier_id: snapfaas_config.notifier_id,
+            copy_memory: snapfaas_config.copy_memory,
+            memory_to_load: snapfaas_config.memory_to_load,
+            huge_page: snapfaas_config.huge_page,
+            sparse_file: snapfaas_config.sparse_file,
         })
     }
 
@@ -1011,18 +1022,19 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if let Some(ref mut dir) = self.load_dir {
-            // file name is set to snapshot.json in Vmm::new, so pop it out
-            dir.pop();
             // build file path
-            let basename = dir.file_name().unwrap().to_str().unwrap();
-            let mut path = if self.hugepage {
+            let mut basename = dir.file_name().unwrap().to_str().unwrap();
+            let mut path = if self.huge_page {
                 PathBuf::from("/dev/hugepages") 
+            } else if self.sparse_file {
+                basename = "memory_dump";
+                dir.clone()
             } else {
                 PathBuf::from("/dev/shm")
             };
             path.push(basename);
             self.guest_memory = 
-                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.hugepage, self.copy_memory).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.huge_page, self.copy_memory).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
@@ -1409,7 +1421,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         let t1 = now_monotime_us();
 
-        self.epoll_context.disable_stdin_event();
+        //self.epoll_context.disable_stdin_event();
 
 
         let vcpus = self
@@ -1631,11 +1643,15 @@ impl Vmm {
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
 
-                self.vm.dump_memory_to_shm(self.dump_dir.as_mut().unwrap());
+                if self.sparse_file {
+                    self.vm.dump_memory_to_sparse_file(self.dump_dir.as_ref().unwrap().clone());
+                } else {
+                    self.vm.dump_memory_to_shm(self.dump_dir.as_ref().unwrap().clone());
+                }
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
-                self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
+                self.dump_dir.as_mut().unwrap().push("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
 
@@ -2216,20 +2232,13 @@ pub fn start_vmm_thread(
     api_event_fd: EventFd,
     from_api: Receiver<Box<VmmAction>>,
     seccomp_level: u32,
-    second_serial: Option<File>,
-    second_input: Option<File>,
-    ready_notifier: Option<File>,
-    notifier_id: u32,
-    hugepage: bool,
-    copy_memory: bool,
+    snapfaas_config: SnapFaaSConfig,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
-            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
-                                   second_serial, second_input, ready_notifier, notifier_id,
-                                   hugepage, copy_memory)
+            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level, snapfaas_config)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {
