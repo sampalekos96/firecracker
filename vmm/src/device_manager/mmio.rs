@@ -93,7 +93,7 @@ impl MMIODeviceManager {
         &mut self,
         vm: &VmFd,
         device: Box<devices::virtio::VirtioDevice>,
-        cmdline: &mut kernel_cmdline::Cmdline,
+        cmdline: Option<&mut kernel_cmdline::Cmdline>,
         id: Option<String>,
     ) -> Result<u64> {
         if self.irq > self.last_irq {
@@ -125,12 +125,14 @@ impl MMIODeviceManager {
         // the size parameter has to be transformed to KiB, so dividing hexadecimal value in
         // bytes to 1024; further, the '{}' formatting rust construct will automatically
         // transform it to decimal
-        cmdline
-            .insert(
-                "virtio_mmio.device",
-                &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
-            )
-            .map_err(Error::Cmdline)?;
+        if let Some(cmdline) = cmdline {
+            cmdline
+                .insert(
+                    "virtio_mmio.device",
+                    &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
+                )
+                .map_err(Error::Cmdline)?;
+        }
         let ret = self.mmio_base;
         self.mmio_base += MMIO_LEN;
         self.irq += 1;

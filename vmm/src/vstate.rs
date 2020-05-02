@@ -401,6 +401,7 @@ pub struct Vcpu {
     io_bus: devices::Bus,
     mmio_bus: devices::Bus,
     create_ts: TimestampUs,
+    ts_126: Vec<TimestampUs>,
 }
 
 impl Vcpu {
@@ -428,6 +429,7 @@ impl Vcpu {
             io_bus,
             mmio_bus,
             create_ts,
+            ts_126: Vec::new(),
         })
     }
 
@@ -627,34 +629,44 @@ impl Vcpu {
                         panic!("mounting app file system failed");
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
-                        //if from_snapshot {
-                            super::Vmm::log_boot_time(&self.create_ts);
-                        //}
+                        if self.ts_126.len() == 0 {
+                          super::Vmm::log_boot_time(&self.create_ts);
+                        }
                         if let Some(mut notifier) = ready_notifier.as_ref() {
                             notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                        }
+                        self.ts_126.push(TimestampUs {
+                            time_us: now_monotime_us(),
+                            cputime_us: now_cputime_us()
+                        });
+                        let len = self.ts_126.len();
+                        if len > 1 {
+                            println!("time: {}us, cputime: {}us",
+                                self.ts_126[len-1].time_us - self.ts_126[len-2].time_us,
+                                self.ts_126[len-1].cputime_us - self.ts_126[len-2].cputime_us);
                         }
                         //unsafe {
                         //    restored_time_1 = now_monotime_us();
                         //    restored_cputime_1 = now_cputime_us();
                         //}
-                        return Err(Error::VcpuUnhandledKvmExit)
+                        //return Err(Error::VcpuUnhandledKvmExit)
                     }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
-                        unsafe {
-                            let now = now_monotime_us();
-                            let nowcpu = now_cputime_us();
-                            println!("App execution time: {}us, cputime: {}us",
-                                now-restored_time_2, nowcpu-restored_cputime_2);
-                        }
-                    }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 128 {
-                        unsafe {
-                            restored_time_2 = now_monotime_us();
-                            restored_cputime_2 = now_cputime_us();
-                            println!("time.sleep(0.000001) time: {}us, cputime: {}us",
-                                restored_time_2-restored_time_1, restored_cputime_2-restored_cputime_1);
-                        }
-                    }
+                    //if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
+                    //    unsafe {
+                    //        let now = now_monotime_us();
+                    //        let nowcpu = now_cputime_us();
+                    //        println!("App execution time: {}us, cputime: {}us",
+                    //            now-restored_time_2, nowcpu-restored_cputime_2);
+                    //    }
+                    //}
+                    //if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 128 {
+                    //    unsafe {
+                    //        restored_time_2 = now_monotime_us();
+                    //        restored_cputime_2 = now_cputime_us();
+                    //        println!("time.sleep(0.000001) time: {}us, cputime: {}us",
+                    //            restored_time_2-restored_time_1, restored_cputime_2-restored_cputime_1);
+                    //    }
+                    //}
 
                     self.io_bus.write(u64::from(addr), data);
                     METRICS.vcpu.exit_io_out.inc();

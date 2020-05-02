@@ -805,6 +805,55 @@ impl Vmm {
     }
 
     // Attaches all block devices from the BlockDevicesConfig.
+    fn attach_block_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        assert!(self.load_dir.is_some());
+        let epoll_context = &mut self.epoll_context;
+        for drive_config in self.block_device_configs.config_list.iter_mut() {
+            // Add the block device from file.
+            let block_file = OpenOptions::new()
+                .read(true)
+                .write(!drive_config.is_read_only)
+                .open(&drive_config.path_on_host)
+                .map_err(StartMicrovmError::OpenBlockDevice)?;
+
+            let (epoll_config, handler_idx) = epoll_context.allocate_virtio_block_tokens();
+            self.drive_handler_id_map
+                .insert(drive_config.drive_id.clone(), handler_idx);
+            let rate_limiter = match drive_config.rate_limiter {
+                Some(rlim_cfg) => Some(
+                    rlim_cfg
+                        .into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            let block_box = Box::new(
+                devices::virtio::Block::new(
+                    block_file,
+                    drive_config.is_read_only,
+                    epoll_config,
+                    rate_limiter,
+                )
+                .map_err(StartMicrovmError::CreateBlockDevice)?,
+            );
+            device_manager
+                .register_device(
+                    self.vm.get_fd(),
+                    block_box,
+                    None,
+                    Some(drive_config.drive_id.clone()),
+                )
+                .map_err(StartMicrovmError::RegisterBlockDevice)?;
+        }
+
+        Ok(())
+    }
+
+    // Attaches all block devices from the BlockDevicesConfig.
     fn attach_block_devices(
         &mut self,
         device_manager: &mut MMIODeviceManager,
@@ -841,20 +890,22 @@ impl Vmm {
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
-            if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
-                kernel_config
-                    .cmdline
-                    .insert_str(format!(
-                        " root=PARTUUID={}",
-                        //The unwrap is safe as we are firstly checking that partuuid is_some().
-                        drive_config.get_partuuid().unwrap()
-                    ))
-                    .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
-                if drive_config.is_read_only {
+            if self.load_dir.is_none() {
+                if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
                     kernel_config
                         .cmdline
-                        .insert_str(" ro")
+                        .insert_str(format!(
+                            " root=PARTUUID={}",
+                            //The unwrap is safe as we are firstly checking that partuuid is_some().
+                            drive_config.get_partuuid().unwrap()
+                        ))
                         .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
+                    if drive_config.is_read_only {
+                        kernel_config
+                            .cmdline
+                            .insert_str(" ro")
+                            .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
+                    }
                 }
             }
 
@@ -883,12 +934,60 @@ impl Vmm {
                 .register_device(
                     self.vm.get_fd(),
                     block_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     Some(drive_config.drive_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterBlockDevice)?;
         }
 
+        Ok(())
+    }
+
+    fn attach_net_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        for cfg in self.network_interface_configs.iter_mut() {
+            let (epoll_config, handler_idx) = self.epoll_context.allocate_virtio_net_tokens();
+            self.net_handler_id_map
+                .insert(cfg.iface_id.clone(), handler_idx);
+
+            let allow_mmds_requests = cfg.allow_mmds_requests();
+            let rx_rate_limiter = match cfg.rx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+            let tx_rate_limiter = match cfg.tx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            if let Some(tap) = cfg.take_tap() {
+                let net_box = Box::new(
+                    devices::virtio::Net::new_with_tap(
+                        tap,
+                        cfg.guest_mac(),
+                        epoll_config,
+                        rx_rate_limiter,
+                        tx_rate_limiter,
+                        allow_mmds_requests,
+                    )
+                    .map_err(StartMicrovmError::CreateNetDevice)?,
+                );
+
+                device_manager
+                    .register_device(self.vm.get_fd(), net_box, None, None)
+                    .map_err(StartMicrovmError::RegisterNetDevice)?;
+            } else {
+                return Err(StartMicrovmError::NetDeviceNotConfigured)?;
+            }
+        }
         Ok(())
     }
 
@@ -937,11 +1036,36 @@ impl Vmm {
                 );
 
                 device_manager
-                    .register_device(self.vm.get_fd(), net_box, &mut kernel_config.cmdline, None)
+                    .register_device(self.vm.get_fd(), net_box, Some(&mut kernel_config.cmdline), None)
                     .map_err(StartMicrovmError::RegisterNetDevice)?;
             } else {
                 return Err(StartMicrovmError::NetDeviceNotConfigured)?;
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "vsock")]
+    fn attach_vsock_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+        guest_mem: &GuestMemory,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        for cfg in self.vsock_device_configs.iter() {
+            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+
+            let vsock_box = Box::new(
+                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                    .map_err(StartMicrovmError::CreateVsockDevice)?,
+            );
+            device_manager
+                .register_device(
+                    self.vm.get_fd(),
+                    vsock_box,
+                    None,
+                    None,
+                )
+                .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
         Ok(())
     }
@@ -968,7 +1092,7 @@ impl Vmm {
                 .register_device(
                     self.vm.get_fd(),
                     vsock_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     None,
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
@@ -1075,10 +1199,17 @@ impl Vmm {
             (arch::IRQ_BASE, arch::IRQ_MAX),
         );
 
-        self.attach_block_devices(&mut device_manager)?;
-        self.attach_net_devices(&mut device_manager)?;
-        #[cfg(feature = "vsock")]
-        self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+        if self.load_dir.is_some() {
+            self.attach_block_devices_snapshot(&mut device_manager)?;
+            self.attach_net_devices_snapshot(&mut device_manager)?;
+            #[cfg(feature = "vsock")]
+            self.attach_vsock_devices_snapshot(&mut device_manager, &guest_mem)?;
+        } else {
+            self.attach_block_devices(&mut device_manager)?;
+            self.attach_net_devices(&mut device_manager)?;
+            #[cfg(feature = "vsock")]
+            self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+        }
 
         self.mmio_device_manager = Some(device_manager);
         Ok(())
@@ -1371,8 +1502,10 @@ impl Vmm {
             cputime_us: self.start_cputime_us,
         };
 
-        self.check_health()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::User, e))?;
+        if self.load_dir.is_none() {
+            self.check_health()
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::User, e))?;
+        }
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1694,6 +1827,9 @@ impl Vmm {
         kernel_image_path: String,
         kernel_cmdline: Option<String>,
     ) -> std::result::Result<VmmData, VmmActionError> {
+        if self.load_dir.is_some() {
+            return Ok(VmmData::Empty);
+        }
         if self.is_instance_initialized() {
             return Err(VmmActionError::BootSource(
                 ErrorKind::User,
