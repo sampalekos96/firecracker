@@ -1575,7 +1575,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         let t3 = now_monotime_us();
         // this println! is fast and does not affect total boot latency measurement
-        println!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
+        eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -2295,7 +2295,7 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
-        println!(
+        eprintln!(
             "Guest-boot-time = {:>6} us {} ms, {:>6} CPU us {} CPU ms",
             boot_time_us,
             boot_time_us / 1000,
