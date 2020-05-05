@@ -262,15 +262,8 @@ impl Vm {
     }
 
     /// Dump memory to a sparse file
-    pub fn dump_memory_to_sparse_file(&self, mut dir: PathBuf) {
-        dir.push("memory_dump");
-        let mut mem_dump = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(dir)
-            .expect("Failed to open memory_dump to write");
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_sparse_file(&mut mem_dump)
+    pub fn dump_memory_to_sparse_file(&self, dir: PathBuf) {
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_sparse_file(dir)
             .expect("Failed to dump memory to a sparse file");
     }
 

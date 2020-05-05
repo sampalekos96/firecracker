@@ -1145,20 +1145,20 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        if let Some(ref mut dir) = self.load_dir {
+        if let Some(ref dir) = self.load_dir {
             // build file path
-            let mut basename = dir.file_name().unwrap().to_str().unwrap();
-            let mut path = if self.huge_page {
-                PathBuf::from("/dev/hugepages") 
-            } else if self.sparse_file {
-                basename = "memory_dump";
-                dir.clone()
-            } else {
-                PathBuf::from("/dev/shm")
-            };
-            path.push(basename);
+            //let mut basename = dir.file_name().unwrap().to_str().unwrap();
+            //let mut path = if self.huge_page {
+            //    PathBuf::from("/dev/hugepages") 
+            //} else if self.sparse_file {
+            //    dir.clone()
+            //} else {
+            //    PathBuf::from("/dev/shm")
+            //};
+            //path.push(basename);
             self.guest_memory = 
-                Some(GuestMemory::new_from_file(&arch_mem_regions, &path, self.huge_page, self.copy_memory).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_file(&arch_mem_regions, dir.clone(), false, self.copy_memory && self.sparse_file)
+                    .map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
                 Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
