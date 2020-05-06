@@ -623,20 +623,20 @@ impl Vcpu {
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
                         if self.ts_126.len() == 0 {
-                          super::Vmm::log_boot_time(&self.create_ts);
-                        }
-                        if let Some(mut notifier) = ready_notifier.as_ref() {
-                            notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                            //super::Vmm::log_boot_time(&self.create_ts);
+                            if let Some(mut notifier) = ready_notifier.as_ref() {
+                                notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                            }
                         }
                         self.ts_126.push(TimestampUs {
                             time_us: now_monotime_us(),
                             cputime_us: now_cputime_us()
                         });
                         let len = self.ts_126.len();
-                        if len > 1 {
-                            println!("time: {}us, cputime: {}us",
-                                self.ts_126[len-1].time_us - self.ts_126[len-2].time_us,
-                                self.ts_126[len-1].cputime_us - self.ts_126[len-2].cputime_us);
+                        if len > 0 {
+                            println!("since create_ts: time: {}us, cputime: {}us",
+                                self.ts_126[len-1].time_us - self.create_ts.time_us,
+                                self.ts_126[len-1].cputime_us - self.create_ts.cputime_us);
                         }
                         //unsafe {
                         //    restored_time_1 = now_monotime_us();

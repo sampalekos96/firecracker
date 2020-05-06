@@ -19,6 +19,7 @@ use libc;
 
 use DataInit;
 
+const PM_ENTRY_SIZE:u64 = 8;
 /// Errors associated with memory mapping.
 #[derive(Debug)]
 pub enum Error {
@@ -128,16 +129,16 @@ impl MemoryMapping {
         (num & (1u64 << bit_pos)) >> bit_pos
     }
 
-
-    /// return a mapping from host physical page numbers to guest physical page numbers
-    /// for the given virtual address range
+    /// Read /proc/PID/pagemap, return a mapping between host and guest physical page numbers
+    /// and the list of dirty guest physical page numbers.
+    /// If `pfn_to_gfn` is true, the mapping is from host to guest.
+    /// Otherwise, the mapping is from guest to host.
     pub fn get_pagemap(
         &self,
         pfn_to_gfn: bool,
         page_i_base: u64,
         page_size: u64,
-    ) -> BTreeMap<u64, u64> {
-        const PM_ENTRY_SIZE:u64 = 8;
+    ) -> (BTreeMap<u64, u64>, Vec<u64>) {
         let path = format!("/proc/{}/pagemap", std::process::id());
         let addr = self.addr as u64;
         let size = self.size as u64;
@@ -149,6 +150,7 @@ impl MemoryMapping {
         let num_pages = (size / page_size) as usize;
         let mut buf = [0 as u8; 8];
         let mut mapping = BTreeMap::new();
+        let mut dirty_list = Vec::new();
         for page_i in 0..num_pages {
             pagemap.read_exact(&mut buf).err();
             let entry = u64::from_le_bytes(buf);
@@ -161,8 +163,11 @@ impl MemoryMapping {
                     mapping.insert(page_i_base + page_i as u64, pfn);
                 }
             }
+            if MemoryMapping::get_bit(entry, 55) == 1 {
+                dirty_list.push(page_i_base + page_i as u64);
+            }
         }
-        mapping
+        (mapping, dirty_list)
     }
     /// Writes a slice to the memory region at the specified offset.
     /// Returns the number of bytes written.  The number of bytes written can

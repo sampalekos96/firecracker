@@ -12,12 +12,14 @@ use std::fs::{OpenOptions, File};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{mem, result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::{IntoRawFd, AsRawFd, RawFd};
 
 use guest_address::GuestAddress;
 use mmap::{self, MemoryMapping};
 use DataInit;
+
+const PAGE_SIZE: usize = 4096;
 
 /// Errors associated with handling guest memory regions.
 #[derive(Debug)]
@@ -68,7 +70,7 @@ pub struct GuestMemory {
 impl GuestMemory {
     /// Creates a container for guest memory regions.
     /// Valid memory regions are specified as a Vec of (Address, Size) tuples sorted by Address.
-    pub fn new(ranges: &[(GuestAddress, usize)]) -> Result<GuestMemory> {
+    pub fn new(ranges: &[(GuestAddress, usize)], clear_soft_dirty_bits: bool) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
         }
@@ -92,6 +94,10 @@ impl GuestMemory {
             });
         }
 
+        if clear_soft_dirty_bits {
+            GuestMemory::clear_soft_dirty_bits();
+        }
+        
         Ok(GuestMemory {
             regions: Arc::new(regions),
         })
@@ -102,15 +108,22 @@ impl GuestMemory {
     /// `hugepage`: use MAP_HUGETLB when creating memory mappings
     /// `copy`: create anonymous memory and then copy content from the memory dump into the new
     /// mappings
-    pub fn new_from_file(ranges: &[(GuestAddress, usize)], mut dir: PathBuf, hugepage: bool, copy: bool) -> Result<GuestMemory> {
+    pub fn new_from_file(
+        ranges: &[(GuestAddress, usize)],
+        mut dir: PathBuf,
+        diff_dir: Option<PathBuf>, 
+        hugepage: bool, 
+        copy: bool,
+        clear_soft_dirty_bits: bool,
+    ) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
         }
 
-        if copy {
+        let guest_mem = if copy {
             // we are copying memory
             // allocate anonymous memory
-            let guest_mem = GuestMemory::new(ranges).expect("Failed to create new guest memory");
+            let guest_mem = GuestMemory::new(ranges, false).expect("Failed to create new guest memory");
             dir.push("memory_dump");
             let mut memory_dump = File::open(dir.as_path()).expect("Failed to open memory_dump");
             // open the file contain dirty regions to be loaded
@@ -118,7 +131,6 @@ impl GuestMemory {
             let mut lines_iter = BufReader::new(File::open(dir.as_path()).expect("Failed to open dirty_regions"))
                 .lines().map(|l| l.expect("Failed to read a page number"));
             let mut bufs = Vec::new();
-            let page_size = 4096;
             guest_mem.with_regions_mut(|_, guest_base, size, ptr| {
                 let mut dirty_region: Vec<usize>;
                 let mut guest_addr: usize;
@@ -135,8 +147,8 @@ impl GuestMemory {
                         dirty_region = line.split(',')
                             .map(|x| x.parse::<usize>().expect("Failed to parse a page number"))
                             .collect();
-                        guest_addr = dirty_region[0] * page_size;
-                        buf_size = dirty_region[1] * page_size;
+                        guest_addr = dirty_region[0] * PAGE_SIZE;
+                        buf_size = dirty_region[1] * PAGE_SIZE;
                         if guest_addr >= guest_base.offset() + size {
                             // next region
                             break;
@@ -153,34 +165,84 @@ impl GuestMemory {
                 Ok(())
             })?;
             memory_dump.read_vectored(bufs.as_mut_slice()).or_else(|e| Err(Error::IoError(e)))?;
-            return Ok(guest_mem);
-        }
-
-        let mut regions = Vec::<MemoryRegion>::new();
-        dir.push("memory_dump_sparse");
-        let fd = File::open(dir.as_path()).expect("File::open failed").into_raw_fd();
-        for range in ranges.iter() {
-            if let Some(last) = regions.last() {
-                if last
-                    .guest_base
-                    .checked_add(last.mapping.size())
-                    .map_or(true, |a| a > range.0)
-                {
-                    return Err(Error::MemoryRegionOverlap);
+            guest_mem
+        } else {
+            let mut regions = Vec::<MemoryRegion>::new();
+            dir.push("memory_dump_sparse");
+            let fd = File::open(dir.as_path()).expect("File::open failed").into_raw_fd();
+            for range in ranges.iter() {
+                if let Some(last) = regions.last() {
+                    if last
+                        .guest_base
+                        .checked_add(last.mapping.size())
+                        .map_or(true, |a| a > range.0)
+                    {
+                        return Err(Error::MemoryRegionOverlap);
+                    }
                 }
-            }
 
-            let mapping = MemoryMapping::new_from_file(range.1, fd, range.0.offset(), hugepage, false)
-                .map_err(Error::MemoryMappingFailed)?;
-            regions.push(MemoryRegion {
-                mapping,
-                guest_base: range.0,
-            });
+                let mapping = MemoryMapping::new_from_file(range.1, fd, range.0.offset(), hugepage, false)
+                    .map_err(Error::MemoryMappingFailed)?;
+                regions.push(MemoryRegion {
+                    mapping,
+                    guest_base: range.0,
+                });
+            }
+            GuestMemory {
+                regions: Arc::new(regions),
+            }
+        };
+        if clear_soft_dirty_bits {
+            GuestMemory::clear_soft_dirty_bits();
+            let (_, dirty_gfns) = guest_mem.get_pagemap(false);
+            println!("pages marked soft dirty: {}", dirty_gfns.len());
+        }
+        if let Some(mut dir) = diff_dir {
+            //println!("loading diff snapshot");
+            // load the diff memory dump
+            dir.push("memory_dump");
+            let memory_dump_fd = File::open(dir.as_path()).expect("Failed to open memory_dump").into_raw_fd();
+            dir.set_file_name("dirty_regions");
+            let mut lines_iter = BufReader::new(File::open(dir.as_path()).expect("Failed to open dirty_regions"))
+                .lines().map(|l| l.expect("Failed to read dirty_regions"));
+            let mut file_offset = 0;
+            let mut region_id = 0;
+            guest_mem.with_regions_mut(|_, guest_base, _, ptr| ->Result<()> {
+                loop {
+                    let next_line = lines_iter.next();
+                    if next_line.is_none() {
+                        break;
+                    }
+                    region_id += 1;
+                    //println!("processing region #{}", region_id);
+                    let line = next_line.unwrap();
+                    let dirty_region = line.split(',').map(|x| x.parse::<usize>().expect("Failed to parse a dirty region"))
+                        .collect::<Vec<usize>>();
+                    let offset = dirty_region[0] * PAGE_SIZE;
+                    let addr = ptr + offset - guest_base.offset();
+                    let region_len = dirty_region[1] * PAGE_SIZE;
+                    unsafe {
+                        if libc::munmap(addr as *mut libc::c_void, region_len) < 0 {
+                            panic!("Unable to munmap a memory mapping");
+                        }
+                        let mapped_addr = libc::mmap(
+                            addr as *mut libc::c_void,
+                            region_len,
+                            libc::PROT_READ | libc::PROT_WRITE,
+                            libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+                            memory_dump_fd,
+                            file_offset as libc::off_t);
+                        if mapped_addr  == libc::MAP_FAILED {
+                            panic!("Unable to mmap the diff snapshot");
+                        }
+                    }
+                    file_offset += region_len;
+                }
+                Ok(())
+            }).unwrap();
         }
 
-        Ok(GuestMemory {
-            regions: Arc::new(regions),
-        })
+        Ok(guest_mem)
     }
 
     /// Returns the end address of memory.
@@ -230,24 +292,34 @@ impl GuestMemory {
         self.regions.len()
     }
 
-    /// Read /proc/PID/pagemap,
-    /// if `pfn_to_gfn` is true, return a mapping from host physical page numbers to
-    /// guest physical page numbers;
-    /// otherwise, return a mapping from guest physical numbers to guest physical page numbers
-    pub fn get_pagemap(&self, pfn_to_gfn: bool) -> BTreeMap<u64, u64> {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    // echo 4 > proc/PID/clear_refs
+    fn clear_soft_dirty_bits() {
+        let path = format!("/proc/{}/clear_refs", std::process::id());
+        let mut proc_file = OpenOptions::new().write(true).open(path).expect("Failed to open /proc/PID/clear_refs");
+        proc_file.write_all(b"4").expect("Failed to clear soft dirty bits");
+    }
+
+    /// Read /proc/PID/pagemap, return a mapping between host and guest physical page numbers
+    /// and the list of dirty guest physical page numbers.
+    /// If `pfn_to_gfn` is true, the mapping is from host to guest.
+    /// Otherwise, the mapping is from guest to host.
+    pub fn get_pagemap(&self, pfn_to_gfn: bool) -> (BTreeMap<u64, u64>, Vec<u64>) {
         let mut mapping = BTreeMap::new();
+        let mut dirty_list = Vec::new();
         let mut page_i_base = 0u64;
         for region in self.regions.iter() {
-            mapping.append(&mut region.mapping.get_pagemap(pfn_to_gfn, page_i_base, page_size));
-            page_i_base += region.mapping.size() as u64 / page_size;
+            let (mut partial_mapping, mut partial_dirty_list) =
+                region.mapping.get_pagemap(pfn_to_gfn, page_i_base, PAGE_SIZE as u64);
+            mapping.append(&mut partial_mapping);
+            dirty_list.append(&mut partial_dirty_list);
+            page_i_base += (region.mapping.size() / PAGE_SIZE) as u64; 
         }
-        mapping
+        (mapping, dirty_list)
     }
 
     unsafe fn punch_holes(fd: RawFd, offset: libc::off_t, len: libc::off_t) -> std::result::Result<(), std::io::Error>{
         // punch holes
-        println!("punch a hole at {} of size {} Bytes", offset, len);
+        //println!("punch a hole at {} of size {} Bytes", offset, len);
         let r = libc::fallocate(
             fd,
             libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
@@ -266,8 +338,17 @@ impl GuestMemory {
     /// The second step is to punch holes
     pub fn dump_initialized_memory_to_sparse_file(&self, mut dir: PathBuf) -> Result<()>
     {
-        let gfns = self.get_pagemap(false).keys().cloned().collect::<Vec<u64>>();
+        let (gfns_to_pfns, dirty_gfns) = self.get_pagemap(false);
+        let gfns = gfns_to_pfns.keys().cloned().collect::<Vec<u64>>();
+        let gfns_set = gfns.iter().cloned().collect::<BTreeSet<u64>>();
+        let dirty_gfns_set = dirty_gfns.iter().cloned().collect::<BTreeSet<u64>>();
+        let present_not_dirty = gfns_set.difference(&dirty_gfns_set);
+        println!("accessed pages: {}; pages only read: {}; pages written: {}",
+            gfns.len(),
+            present_not_dirty.collect::<Vec<&u64>>().len(),
+            dirty_gfns.len());
 
+        let gfns = dirty_gfns_set.iter().cloned().collect::<Vec<u64>>();
         // open files
         dir.push("memory_dump_sparse");
         let mut memory_dump_sparse = OpenOptions::new()
@@ -304,30 +385,29 @@ impl GuestMemory {
         }
 
         // write dirty_regions and memory_dump
-        let page_size = 4096usize;
         let mut test = 1usize;
         let mut start = 0usize;
         self.with_regions_mut(|_, guest_base, size, _| -> Result<()> {
             loop {
                 // find the end of current dirty region
                 while test < gfns.len() && gfns[test] - gfns[test-1] == 1 &&
-                    (gfns[test] as usize) < guest_base.offset() + size / page_size {
+                    (gfns[test] as usize) < guest_base.offset() + size / PAGE_SIZE {
                     test += 1;
                 }
                 let start_gfn = gfns[start];
                 let ngfns = test - start; // test - 1 - start + 1
                 write!(dirty_region_recorder, "{},{}\n", start_gfn, ngfns).or_else(|e| Err(Error::IoError(e)))?;
                 self.write_from_memory(
-                    GuestAddress(start_gfn as usize * page_size),
+                    GuestAddress(start_gfn as usize * PAGE_SIZE),
                     &mut memory_dump,
-                    ngfns * page_size,
+                    ngfns * PAGE_SIZE,
                 )?;
                 start = test;
                 test = start + 1;
                 if start >= gfns.len() {
                     break;
                 }
-                if gfns[start] as usize >= guest_base.offset() + size / page_size {
+                if gfns[start] as usize >= guest_base.offset() + size / PAGE_SIZE {
                     break;
                 }
             }
@@ -343,7 +423,7 @@ impl GuestMemory {
         // a hole at the beginning
         if gfns[0] > 0 {
             let offset = 0;
-            let len = gfns[0] as usize * page_size;
+            let len = gfns[0] as usize * PAGE_SIZE;
             unsafe {
                 GuestMemory::punch_holes(memory_dump_sparse.as_raw_fd(), offset as libc::off_t, len as libc::off_t)
                     .or_else(|e| Err(Error::IoError(e)))?;
@@ -356,11 +436,11 @@ impl GuestMemory {
             while test < gfns.len() && gfns[test] - gfns[test-1] == 1 {
                 test += 1;
             }
-            let offset = (gfns[test-1] as usize + 1) * page_size;
+            let offset = (gfns[test-1] as usize + 1) * PAGE_SIZE;
             let len = if test < gfns.len() {
-                (gfns[test] - gfns[test-1] - 1) as usize * page_size
+                (gfns[test] - gfns[test-1] - 1) as usize * PAGE_SIZE
             } else {
-                self.end_addr().offset() - (gfns[test-1] as usize + 1) * page_size
+                self.end_addr().offset() - (gfns[test-1] as usize + 1) * PAGE_SIZE
             };
             if len == 0 {
                 break;
@@ -382,16 +462,15 @@ impl GuestMemory {
     where
         F: Write + Seek,
     {
-        let page_size = 4096;
-        let gfns_to_pfns = self.get_pagemap(false);
+        let (gfns_to_pfns, _) = self.get_pagemap(false);
         for (gfn, _) in gfns_to_pfns.iter() {
             write!(page_number_file, "{}\n", gfn).expect("failed to write to page_numbers");
-            writer.seek(SeekFrom::Start((gfn * page_size) as u64)).expect("seek failed");
+            writer.seek(SeekFrom::Start(gfn * PAGE_SIZE as u64)).expect("seek failed");
             // write page content
             self.write_from_memory(
-                GuestAddress((gfn * page_size) as usize),
+                GuestAddress(*gfn as usize * PAGE_SIZE),
                 writer,
-                page_size as usize
+                PAGE_SIZE as usize
             )?;
         }
         Ok(())
@@ -405,8 +484,8 @@ impl GuestMemory {
     where
         F: Write,
     {
-        let page_size = 4096usize;
-        let mut gfns = self.get_pagemap(false).keys().cloned().collect::<Vec<u64>>();
+        let (gfns_to_pfns, _) = self.get_pagemap(false);
+        let gfns = gfns_to_pfns.keys().cloned().collect::<Vec<u64>>();
         let mut start = 0usize;
         let mut test = 1usize;
         let mut ri = 0usize; // index into self.regions
@@ -422,23 +501,23 @@ impl GuestMemory {
         loop {
             // find the end of current dump region
             while test < gfns.len() && gfns[test] - gfns[test-1] == 1
-                && gfns[test] as usize * page_size < region_end(&self.regions[ri]).offset() {
+                && gfns[test] as usize * PAGE_SIZE < region_end(&self.regions[ri]).offset() {
                 test += 1;
             }
             writer.write_all(&gfns[start].to_le_bytes()).map_err(|e| Error::IoError(e))?;
             writer.write_all(&(test-start).to_le_bytes()).map_err(|e| Error::IoError(e))?;
             // write page content
             self.write_from_memory(
-                GuestAddress(gfns[start] as usize * page_size),
+                GuestAddress(gfns[start] as usize * PAGE_SIZE),
                 writer,
-                (test - start) * page_size)?;
+                (test - start) * PAGE_SIZE)?;
             // start a new dump region
             start = test;
             test = start + 1;
             if start >= gfns.len() {
                 break;
             }
-            while gfns[start] as usize * page_size >= region_end(&self.regions[ri]).offset() {
+            while gfns[start] as usize * PAGE_SIZE >= region_end(&self.regions[ri]).offset() {
                 ri += 1;
             }
         }
@@ -450,14 +529,13 @@ impl GuestMemory {
     where
         F: Read,
     {
-        let page_size = 4096usize;
         let buf = &mut [0u8; 8usize];
         // the loop should break out upon UnexpectedEof when the end is reached
         while reader.read_exact(buf).is_ok() {
             let gpfn = usize::from_le_bytes(*buf);
             reader.read_exact(buf).map_err(|e| Error::IoError(e))?;
             let cnt = usize::from_le_bytes(*buf);
-            self.read_to_memory(GuestAddress(gpfn * page_size), reader, cnt * page_size)?;
+            self.read_to_memory(GuestAddress(gpfn * PAGE_SIZE), reader, cnt * PAGE_SIZE)?;
         }
         Ok(())
     }

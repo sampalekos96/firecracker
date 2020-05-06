@@ -276,6 +276,8 @@ pub struct SnapFaaSConfig {
     pub huge_page: bool,
     /// use sparse file
     pub sparse_file: bool,
+    /// diff snapshot directory
+    pub diff_dir: Option<PathBuf>,
 }
 
 /// This enum represents the public interface of the VMM. Each action contains various
@@ -676,6 +678,7 @@ struct Vmm {
     memory_to_load: Option<File>,
     huge_page: bool,
     sparse_file: bool,
+    diff_dir: Option<PathBuf>,
 }
 
 impl Vmm {
@@ -769,6 +772,7 @@ impl Vmm {
             memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
             sparse_file: snapfaas_config.sparse_file,
+            diff_dir: snapfaas_config.diff_dir,
         })
     }
 
@@ -1157,11 +1161,18 @@ impl Vmm {
             //};
             //path.push(basename);
             self.guest_memory = 
-                Some(GuestMemory::new_from_file(&arch_mem_regions, dir.clone(), false, self.copy_memory && self.sparse_file)
-                    .map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new_from_file(
+                        &arch_mem_regions,
+                        dir.clone(),
+                        self.diff_dir.clone(),
+                        false,
+                        self.copy_memory && self.sparse_file,
+                        self.load_dir.is_some() && self.dump_dir.is_some(),
+                    ).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
-                Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+                Some(GuestMemory::new(&arch_mem_regions, self.dump_dir.is_some())
+                    .map_err(StartMicrovmError::GuestMemory)?);
         }
         self.vm
             .memory_init(
@@ -1574,8 +1585,10 @@ impl Vmm {
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         let t3 = now_monotime_us();
-        // this println! is fast and does not affect total boot latency measurement
+        // fast (28us) and does not affect total boot latency measurement
         eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
+        //let t4 = now_monotime_us();
+        //eprintln!("last eprintln! costs: {}", t4-t3);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1821,6 +1834,33 @@ impl Vmm {
         }
         0
     }
+
+    // Count the list of pages dirtied since the last call to this function.
+    // Intended for diff snapshot generation
+    //#[cfg(target_arch = "x86_64")]
+    //fn get_dirty_page_list(&mut self) -> Vec<usize> {
+    //    if let Some(ref mem) = self.guest_memory {
+    //        let dirty_pages = mem.map_and_fold(
+    //            Vec::new(),
+    //            |(slot, memory_region)| {
+    //                let bitmap = self
+    //                    .vm
+    //                    .get_fd()
+    //                    .get_dirty_log(slot as u32, memory_region.size());
+    //                let base_gfn = memory_region.end_addr() - memory_region.size();
+    //                match bitmap {
+    //                    Ok(v) => v
+    //                        .iter()
+    //                        .fold(Vec::new(), |init, page| init.append(page.count_ones()) ),
+    //                    Err(_) => Vec::new(),
+    //                }
+    //            },
+    //            |mut dirty_pages, mut region_dirty_pages| dirty_pages.append(&mut region_dirty_pages),
+    //        );
+    //        return dirty_pages;
+    //    }
+    //    Vec::new() 
+    //}
 
     fn configure_boot_source(
         &mut self,
