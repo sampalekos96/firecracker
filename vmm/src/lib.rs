@@ -270,8 +270,10 @@ pub struct SnapFaaSConfig {
     pub second_serial: Option<File>,
     /// second serial input
     pub second_input: Option<File>,
-    /// restore memory by copying
-    pub copy_memory: bool,
+    /// restore base memory by copying
+    pub copy_base: bool,
+    /// restore diff memory by copying
+    pub copy_diff: bool,
     /// use huge pages
     pub huge_page: bool,
     /// use sparse file
@@ -674,11 +676,12 @@ struct Vmm {
     notifier_id: u32,
 
     // restore memory by copying
-    copy_memory: bool,
+    copy_base: bool,
     memory_to_load: Option<File>,
     huge_page: bool,
     sparse_file: bool,
     diff_dir: Option<PathBuf>,
+    copy_diff: bool,
 }
 
 impl Vmm {
@@ -768,11 +771,12 @@ impl Vmm {
             snap_evt,
             ready_notifier: snapfaas_config.ready_notifier,
             notifier_id: snapfaas_config.notifier_id,
-            copy_memory: snapfaas_config.copy_memory,
+            copy_base: snapfaas_config.copy_base,
             memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
             sparse_file: snapfaas_config.sparse_file,
             diff_dir: snapfaas_config.diff_dir,
+            copy_diff: snapfaas_config.copy_diff,
         })
     }
 
@@ -1166,7 +1170,8 @@ impl Vmm {
                         dir.clone(),
                         self.diff_dir.clone(),
                         false,
-                        self.copy_memory && self.sparse_file,
+                        self.copy_base && self.sparse_file,
+                        self.copy_diff && self.diff_dir.is_some(),
                         self.load_dir.is_some() && self.dump_dir.is_some(),
                     ).map_err(StartMicrovmError::GuestMemory)?);
         } else {
@@ -1904,6 +1909,7 @@ impl Vmm {
         &mut self,
         machine_config: VmConfig,
     ) -> std::result::Result<VmmData, VmmActionError> {
+        //let start = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::MachineConfig(
                 ErrorKind::User,
@@ -1962,6 +1968,8 @@ impl Vmm {
             self.vm_config.cpu_template = machine_config.cpu_template;
         }
 
+        //let end = now_monotime_us();
+        //eprintln!("set_vm_configuration took {} us", end - start);
         Ok(VmmData::Empty)
     }
 
