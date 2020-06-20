@@ -39,11 +39,6 @@ const KVM_MEM_LOG_DIRTY_PAGES: u32 = 0x1;
 const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x03f0;
 const MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE: u8 = 123;
 
-static mut restored_time_1: u64 = 0;
-static mut restored_time_2: u64 = 0;
-static mut restored_cputime_1: u64 = 0;
-static mut restored_cputime_2: u64 = 0;
-
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug)]
 pub enum Error {
@@ -248,50 +243,11 @@ impl Vm {
         Ok(())
     }
 
-    /// Dump memory to runtime_mem_dump
-    pub fn dump_memory(&self, path: &PathBuf) {
-        let mem_dump = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(path.as_path())
-            .expect("Failed to open runtime_mem_dump");
-        let writer = &mut BufWriter::new(mem_dump);
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory(writer)
-            .expect("Failed to write runtime_mem_dump");
-    }
-
-    /// Dump memory to a sparse file
-    pub fn dump_memory_to_sparse_file(&self, dir: PathBuf) {
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_sparse_file(dir)
+    /// Generate memory dump under the provided directory `dir`.
+    /// Memory dump contains only dirtied memory.
+    pub fn dump_initialized_memory_to_file(&self, dir: PathBuf) {
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_file(dir)
             .expect("Failed to dump memory to a sparse file");
-    }
-
-    /// Dump memory to `/dev/shm`
-    pub fn dump_memory_to_shm(&self, mut dump_dir:  PathBuf) {
-        // build shared memory file name
-        let name = dump_dir.file_name().unwrap().to_str().unwrap();
-        // open shared memory file
-        let shm_fd = unsafe {
-            libc::shm_open(
-                std::ffi::CString::new(name).expect("CString::new failed").as_ptr(),
-                libc::O_CREAT | libc::O_RDWR | libc::O_TRUNC,
-                libc::S_IRWXO)
-        };
-        unsafe {
-            libc::ftruncate(shm_fd, self.guest_mem.as_ref().unwrap().end_addr().offset() as libc::off_t);
-        }
-        use std::os::unix::io::FromRawFd;
-        let shm_file = unsafe { File::from_raw_fd(shm_fd) };
-        let writer = &mut BufWriter::new(shm_file);
-        dump_dir.push("page_numbers");
-        let mut page_number_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(dump_dir).expect("Failed to open page_numbers");
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_shm(writer, &mut page_number_file)
-            .expect("Failed to write /dev/shm");
     }
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
@@ -634,32 +590,12 @@ impl Vcpu {
                         });
                         let len = self.ts_126.len();
                         if len > 0 {
-                            println!("since create_ts: time: {}us, cputime: {}us",
+                            eprintln!("since create_ts: time: {}us, cputime: {}us",
                                 self.ts_126[len-1].time_us - self.create_ts.time_us,
                                 self.ts_126[len-1].cputime_us - self.create_ts.cputime_us);
                         }
-                        //unsafe {
-                        //    restored_time_1 = now_monotime_us();
-                        //    restored_cputime_1 = now_cputime_us();
-                        //}
                         //return Err(Error::VcpuUnhandledKvmExit)
                     }
-                    //if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
-                    //    unsafe {
-                    //        let now = now_monotime_us();
-                    //        let nowcpu = now_cputime_us();
-                    //        println!("App execution time: {}us, cputime: {}us",
-                    //            now-restored_time_2, nowcpu-restored_cputime_2);
-                    //    }
-                    //}
-                    //if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 128 {
-                    //    unsafe {
-                    //        restored_time_2 = now_monotime_us();
-                    //        restored_cputime_2 = now_cputime_us();
-                    //        println!("time.sleep(0.000001) time: {}us, cputime: {}us",
-                    //            restored_time_2-restored_time_1, restored_cputime_2-restored_cputime_1);
-                    //    }
-                    //}
 
                     self.io_bus.write(u64::from(addr), data);
                     METRICS.vcpu.exit_io_out.inc();

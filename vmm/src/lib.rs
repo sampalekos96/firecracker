@@ -276,10 +276,8 @@ pub struct SnapFaaSConfig {
     pub copy_diff: bool,
     /// use huge pages
     pub huge_page: bool,
-    /// use sparse file
-    pub sparse_file: bool,
     /// diff snapshot directory
-    pub diff_dir: Option<PathBuf>,
+    pub diff_dirs: Vec<PathBuf>,
 }
 
 /// This enum represents the public interface of the VMM. Each action contains various
@@ -679,8 +677,7 @@ struct Vmm {
     copy_base: bool,
     memory_to_load: Option<File>,
     huge_page: bool,
-    sparse_file: bool,
-    diff_dir: Option<PathBuf>,
+    diff_dirs: Vec<PathBuf>,
     copy_diff: bool,
 }
 
@@ -774,8 +771,7 @@ impl Vmm {
             copy_base: snapfaas_config.copy_base,
             memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
-            sparse_file: snapfaas_config.sparse_file,
-            diff_dir: snapfaas_config.diff_dir,
+            diff_dirs: snapfaas_config.diff_dirs,
             copy_diff: snapfaas_config.copy_diff,
         })
     }
@@ -1154,25 +1150,15 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if let Some(ref dir) = self.load_dir {
-            // build file path
-            //let mut basename = dir.file_name().unwrap().to_str().unwrap();
-            //let mut path = if self.huge_page {
-            //    PathBuf::from("/dev/hugepages") 
-            //} else if self.sparse_file {
-            //    dir.clone()
-            //} else {
-            //    PathBuf::from("/dev/shm")
-            //};
-            //path.push(basename);
             self.guest_memory = 
                 Some(GuestMemory::new_from_file(
                         &arch_mem_regions,
                         dir.clone(),
-                        self.diff_dir.clone(),
-                        false,
-                        self.copy_base && self.sparse_file,
-                        self.copy_diff && self.diff_dir.is_some(),
-                        self.load_dir.is_some() && self.dump_dir.is_some(),
+                        &self.diff_dirs,
+                        self.huge_page,
+                        self.copy_base, // a base snapshot should always be provided
+                        self.copy_diff && self.diff_dirs.len() > 0, // only valid when a diff snapshot is provided
+                        self.load_dir.is_some() && self.dump_dir.is_some(), // only clear soft dirty bits when generating diff snapshots
                     ).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
@@ -1541,7 +1527,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         let mut entry_addr = GuestAddress(0);
-        if let Some(ref mut dir) = self.load_dir {
+        if let Some(_) = self.load_dir.as_ref() {
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
@@ -1794,11 +1780,7 @@ impl Vmm {
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
 
-                if self.sparse_file {
-                    self.vm.dump_memory_to_sparse_file(self.dump_dir.as_ref().unwrap().clone());
-                } else {
-                    self.vm.dump_memory_to_shm(self.dump_dir.as_ref().unwrap().clone());
-                }
+                self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();

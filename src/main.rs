@@ -169,14 +169,15 @@ fn main() {
         load_dir: None,
         parsed_json: None,
         memory_to_load: None,
+        diff_dir: None,
         dump_dir: None,
         ready_notifier: None,
         notifier_id: 0,
         second_serial: None,
         second_input: None,
-        copy_memory: false,
+        copy_base: false,
+        copy_diff: false,
         huge_page: false,
-        sparse_file: false,
     };
     let _vmm_thread_handle =
         vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, snapfaas_config);
