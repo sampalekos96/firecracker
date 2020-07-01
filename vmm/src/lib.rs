@@ -715,7 +715,7 @@ impl Vmm {
             Some(_) => {
                 let (sender, receiver) = channel();
                 (Some(sender), Some(receiver))
-            }, 
+            },
             None => (None, None)
         };
         let evtfd = EventFd::new().expect("Cannot create snap event fd");
@@ -1150,7 +1150,7 @@ impl Vmm {
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
         if let Some(ref dir) = self.load_dir {
-            self.guest_memory = 
+            self.guest_memory =
                 Some(GuestMemory::new_from_file(
                         &arch_mem_regions,
                         dir.clone(),
@@ -1486,8 +1486,74 @@ impl Vmm {
         bus.write(base+0x70, &data);
 
         let queues =
-            &self.snap_to_load.as_ref().unwrap().virtio_states[index as usize].queues;
+            &self.snap_to_load.as_ref().unwrap().block_states[index as usize].queues;
         self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
+    }
+
+    fn restore_net_device(&mut self, index: u64) {
+        //manually replay writes to mmio device
+        // index: network devices come after block devices
+        let base = 0xd000_0000u64 + (index + self.drive_handler_id_map.len() as u64)*4096;
+        let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+        let mut data = [0u8; 4];
+        let zero = [0u8; 4];
+
+        // 0x70: update_driver_status
+        // 0x14: features_select
+        // 0x20: ack_features
+        // 0x24: acked_features_select
+        // 0x30: queue_select
+        bus.write(base+0x70, &zero);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 3);
+        bus.write(base+0x70, &data);
+
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x14, &data);
+        bus.write(base+0x14, &zero);
+
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x24, &data);
+        bus.write(base+0x20, &data);
+
+        bus.write(base+0x24, &zero);
+        LittleEndian::write_u32(data.as_mut(), 19619);
+        bus.write(base+0x20, &data);
+
+        LittleEndian::write_u32(data.as_mut(), 11);
+        bus.write(base+0x70, &data);
+
+        // select queue 0
+        bus.write(base+0x30, &zero);
+        // states checked by device activation operation
+        // queue size and queue ready
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+
+        // select queue 1
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x30, &data);
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+
+        // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // Activation requires all queues in a valid state:
+        //     1. must be marked as ready
+        //     2. size must not be zero and cannot exceed max_size
+        //     3. descriptor table/available ring/used ring must completely reside in guest memory
+        //     4. alignment constraints must be satisfied
+        LittleEndian::write_u32(data.as_mut(), 15);
+        bus.write(base+0x70, &data);
+
+        let queues =
+            &self.snap_to_load.as_ref().unwrap().net_states[index as usize].queues;
+        self.epoll_context.get_device_handler(index as usize + self.drive_handler_id_map.len())
+            .unwrap().set_queues(&queues);
     }
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
@@ -1531,6 +1597,9 @@ impl Vmm {
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
+            for i in 0..self.net_handler_id_map.len() {
+                self.restore_net_device(i as u64);
+            }
             let serial_state = devices::legacy::SerialState {
                 interrupt_enable: 5,
                 interrupt_identification: 1,
@@ -1567,7 +1636,8 @@ impl Vmm {
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
                 // TODO: currently only block devices
-                virtio_states: vec![Default::default(); self.drive_handler_id_map.len()],
+                block_states: vec![Default::default(); self.drive_handler_id_map.len()],
+                net_states: vec![Default::default(); self.net_handler_id_map.len()],
                 vcpu_states: vec![Default::default(); self.vm_config.vcpu_count.unwrap() as usize],
                 ..Default::default()
             });
@@ -1774,10 +1844,15 @@ impl Vmm {
                 }
             }
             if exit_on_dump {
-                // dump virtio (now only block) devices' queue states
+                // dump block devices' queue states
                 for i in 0..self.drive_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().virtio_states[i].queues =
+                    self.snap_to_dump.as_mut().unwrap().block_states[i].queues =
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
+                }
+                for i in 0..self.net_handler_id_map.len() {
+                    self.snap_to_dump.as_mut().unwrap().net_states[i].queues =
+                        self.epoll_context.get_device_handler(i + self.drive_handler_id_map.len())
+                            .unwrap().get_queues();
                 }
 
                 self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
@@ -1846,7 +1921,7 @@ impl Vmm {
     //        );
     //        return dirty_pages;
     //    }
-    //    Vec::new() 
+    //    Vec::new()
     //}
 
     fn configure_boot_source(

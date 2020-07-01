@@ -283,10 +283,9 @@ pub fn create_msr_entries() -> Vec<kvm_msr_entry> {
     entries
 }
 
-pub fn create_msr_apicbase() -> kvm_msr_entry {
+pub fn create_msr_tscdeadline() -> kvm_msr_entry {
     kvm_msr_entry {
-        index: msr_index::MSR_IA32_APICBASE,
-        data: 0x0,
+        index: msr_index::MSR_IA32_TSCDEADLINE,
         ..Default::default()
     }
 }

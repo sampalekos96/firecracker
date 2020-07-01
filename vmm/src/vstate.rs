@@ -142,8 +142,10 @@ pub struct Snapshot {
     /// PIC slave
     pub pic_slave: kvm_pic_state,
     // TODO: currently only block devices
-    /// Virtio device
-    pub virtio_states: Vec<VirtioState>,
+    /// Virtio block device
+    pub block_states: Vec<VirtioState>,
+    /// Virtio net device
+    pub net_states: Vec<VirtioState>,
     /// Vcpu
     pub vcpu_states: Vec<VcpuState>,
 }
@@ -384,7 +386,7 @@ impl Vcpu {
 
     fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
         let mut entry_vec = arch::x86_64::regs::create_msr_entries();
-        entry_vec.push(arch::x86_64::regs::create_msr_apicbase());
+        entry_vec.push(arch::x86_64::regs::create_msr_tscdeadline());
         let vec_size_bytes =
             std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
         let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
@@ -441,13 +443,8 @@ impl Vcpu {
 
         self.fd.set_sregs(&vcpu_state.sregs)?;
 
-        self.set_msrs(vcpu_state)?;
-
-        self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
-
-        self.fd.set_mp_state(&vcpu_state.mp_state)?;
-
         let regs_vec = &vcpu_state.lapic_regs;
+        // from kvm api documentation, KVM_APIC_REG_SIZE = 0x400/1024
         let mut regs = [0 as std::os::raw::c_char; 1024usize];
         for (idx, _) in regs_vec.iter().enumerate() {
             regs[idx] = regs_vec[idx];
@@ -455,6 +452,14 @@ impl Vcpu {
 
         let lapic = kvm_lapic_state { regs };
         self.fd.set_lapic(&lapic)?;
+
+        // this must be after lapic is restored
+        // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
+        self.set_msrs(vcpu_state)?;
+
+        self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
+
+        self.fd.set_mp_state(&vcpu_state.mp_state)?;
 
         Ok(())
     }

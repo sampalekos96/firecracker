@@ -498,13 +498,14 @@ impl NetEpollHandler {
 }
 
 impl EpollHandler for NetEpollHandler {
-    fn set_queues(&mut self, _other: &Vec<Queue>) {
+    fn set_queues(&mut self, other: &Vec<Queue>) {
 	// TODO: incomplete implementation
+        self.tx.queue = other[1].clone();
+        self.rx.queue = other[0].clone();
     }
 
     fn get_queues(&self) -> Vec<Queue> {
-	// TODO: incomplete implementation
-	Vec::new()
+        [self.rx.queue.clone(), self.tx.queue.clone()].to_vec()
     }
 
     fn handle_event(
