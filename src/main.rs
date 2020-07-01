@@ -169,7 +169,7 @@ fn main() {
         load_dir: None,
         parsed_json: None,
         memory_to_load: None,
-        diff_dir: None,
+        diff_dirs: Vec::new(),
         dump_dir: None,
         ready_notifier: None,
         notifier_id: 0,

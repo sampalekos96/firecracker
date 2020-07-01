@@ -1647,9 +1647,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement
-        eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
-        //let t4 = now_monotime_us();
-        //eprintln!("last eprintln! costs: {}", t4-t3);
+        //eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1966,7 +1964,6 @@ impl Vmm {
         &mut self,
         machine_config: VmConfig,
     ) -> std::result::Result<VmmData, VmmActionError> {
-        //let start = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::MachineConfig(
                 ErrorKind::User,
@@ -2025,8 +2022,6 @@ impl Vmm {
             self.vm_config.cpu_template = machine_config.cpu_template;
         }
 
-        //let end = now_monotime_us();
-        //eprintln!("set_vm_configuration took {} us", end - start);
         Ok(VmmData::Empty)
     }
 
@@ -2400,7 +2395,7 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
-        eprintln!(
+        info!(
             "Guest-boot-time = {:>6} us {} ms, {:>6} CPU us {} CPU ms",
             boot_time_us,
             boot_time_us / 1000,
