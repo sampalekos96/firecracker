@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use fc_util::now_monotime_us;
+use fc_util::{now_monotime_us, now_cputime_us};
 
 use std::io;
 use std::io::BufWriter;
@@ -13,7 +13,7 @@ use std::result;
 use std::sync::{Arc, Barrier};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 
 use super::{KvmContext, TimestampUs};
@@ -126,19 +126,27 @@ pub struct IoapicState {
    pub pad: u32,
    pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
 }
-    
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct VirtioState {
     pub queues: Vec<devices::virtio::queue::Queue>
 }
 
+/// Snapshot
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// IOAPIC
     pub ioapic: IoapicState,
+    /// PIC master
     pub pic_master: kvm_pic_state,
+    /// PIC slave
     pub pic_slave: kvm_pic_state,
     // TODO: currently only block devices
-    pub virtio_states: Vec<VirtioState>, 
+    /// Virtio block device
+    pub block_states: Vec<VirtioState>,
+    /// Virtio net device
+    pub net_states: Vec<VirtioState>,
+    /// Vcpu
     pub vcpu_states: Vec<VcpuState>,
 }
 
@@ -210,6 +218,7 @@ impl Vm {
         if guest_mem.num_regions() > kvm_context.max_memslots() {
             return Err(Error::NotEnoughMemorySlots);
         }
+        //let t0 = now_monotime_us();
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
@@ -233,27 +242,20 @@ impl Vm {
         self.fd
             .set_tss_address(GuestAddress(arch::x86_64::layout::KVM_TSS_ADDRESS).offset())
             .map_err(Error::VmSetup)?;
-
         Ok(())
     }
 
-    /// Dump memory to runtime_mem_dump
-    pub fn dump_memory(&self, path: &PathBuf) {
-        let mem_dump = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(path.as_path())
-            .expect("Failed to open runtime_mem_dump");
-        let writer = &mut BufWriter::new(mem_dump);
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory(writer)
-            .expect("Failed to write runtime_mem_dump");
+    /// Generate memory dump under the provided directory `dir`.
+    /// Memory dump contains only dirtied memory.
+    pub fn dump_initialized_memory_to_file(&self, dir: PathBuf) {
+        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_file(dir)
+            .expect("Failed to dump memory to a sparse file");
     }
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
         let mut irqchip = kvm_irqchip {
             chip_id: KVM_IRQCHIP_IOAPIC,
-            ..Default::default() 
+            ..Default::default()
         };
         let ioapic = &snapshot.ioapic;
         unsafe {
@@ -350,6 +352,7 @@ pub struct Vcpu {
     io_bus: devices::Bus,
     mmio_bus: devices::Bus,
     create_ts: TimestampUs,
+    ts_126: Vec<TimestampUs>,
 }
 
 impl Vcpu {
@@ -377,11 +380,13 @@ impl Vcpu {
             io_bus,
             mmio_bus,
             create_ts,
+            ts_126: Vec::new(),
         })
     }
 
     fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
-        let entry_vec = arch::x86_64::regs::create_msr_entries();
+        let mut entry_vec = arch::x86_64::regs::create_msr_entries();
+        entry_vec.push(arch::x86_64::regs::create_msr_tscdeadline());
         let vec_size_bytes =
             std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
         let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
@@ -433,24 +438,28 @@ impl Vcpu {
         }
         let xsave = kvm_xsave{ region };
         self.fd.set_xsave(&xsave)?;
-        
+
         self.fd.set_xcrs(&vcpu_state.xcrs)?;
 
         self.fd.set_sregs(&vcpu_state.sregs)?;
 
+        let regs_vec = &vcpu_state.lapic_regs;
+        // from kvm api documentation, KVM_APIC_REG_SIZE = 0x400/1024
+        let mut regs = [0 as std::os::raw::c_char; 1024usize];
+        for (idx, _) in regs_vec.iter().enumerate() {
+            regs[idx] = regs_vec[idx];
+        }
+
+        let lapic = kvm_lapic_state { regs };
+        self.fd.set_lapic(&lapic)?;
+
+        // this must be after lapic is restored
+        // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
         self.set_msrs(vcpu_state)?;
 
         self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
 
         self.fd.set_mp_state(&vcpu_state.mp_state)?;
-
-        let regs_vec = &vcpu_state.lapic_regs;
-        let mut regs = [0 as std::os::raw::c_char; 1024usize];
-        for (idx, _) in regs_vec.iter().enumerate() {
-            regs[idx] = regs_vec[idx];
-        }
-        let lapic = kvm_lapic_state { regs };
-        self.fd.set_lapic(&lapic)?;
 
         Ok(())
     }
@@ -574,15 +583,23 @@ impl Vcpu {
                         panic!("mounting app file system failed");
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
-                        if from_snapshot {
-                            super::Vmm::log_boot_time(&self.create_ts);
+                        if self.ts_126.len() == 0 {
+                            //super::Vmm::log_boot_time(&self.create_ts);
+                            if let Some(mut notifier) = ready_notifier.as_ref() {
+                                notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
+                            }
                         }
-                        if let Some(mut notifier) = ready_notifier.as_ref() {
-                            notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
-                        }
-                    }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 127 {
-                        //println!("App done.")
+                        self.ts_126.push(TimestampUs {
+                            time_us: now_monotime_us(),
+                            cputime_us: now_cputime_us()
+                        });
+                        //let len = self.ts_126.len();
+                        //if len > 0 {
+                        //    eprintln!("since create_ts: time: {}us, cputime: {}us",
+                        //        self.ts_126[len-1].time_us - self.create_ts.time_us,
+                        //        self.ts_126[len-1].cputime_us - self.create_ts.cputime_us);
+                        //}
+                        //return Err(Error::VcpuUnhandledKvmExit)
                     }
 
                     self.io_bus.write(u64::from(addr), data);

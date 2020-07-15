@@ -91,7 +91,8 @@ use vmm_config::net::{
 };
 #[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
-use vstate::{Vcpu, Vm, Snapshot, VcpuInfo};
+use vstate::{Vcpu, Vm, VcpuInfo};
+pub use vstate::Snapshot;
 
 /// Default guest kernel command line:
 /// - `reboot=k` shut down the guest on reboot, instead of well... rebooting;
@@ -249,6 +250,34 @@ impl Display for VmmActionError {
             VsockConfig(_, ref err) => write!(f, "{}", err.to_string()),
         }
     }
+}
+
+/// SnapFaaS config
+pub struct SnapFaaSConfig {
+    /// snapshot directory to load from
+    pub load_dir: Option<PathBuf>,
+    /// parsed snapshot.json
+    pub parsed_json: Option<Snapshot>,
+    /// memory to load
+    pub memory_to_load: Option<File>,
+    /// directory to dump to
+    pub dump_dir: Option<PathBuf>,
+    /// notifier to send ready signal
+    pub ready_notifier: Option<File>,
+    /// id of this instance
+    pub notifier_id: u32,
+    /// second serial output
+    pub second_serial: Option<File>,
+    /// second serial input
+    pub second_input: Option<File>,
+    /// restore base memory by copying
+    pub copy_base: bool,
+    /// restore diff memory by copying
+    pub copy_diff: bool,
+    /// use huge pages
+    pub huge_page: bool,
+    /// diff snapshot directory
+    pub diff_dirs: Vec<PathBuf>,
 }
 
 /// This enum represents the public interface of the VMM. Each action contains various
@@ -626,6 +655,9 @@ struct Vmm {
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
 
+    // Start timestamp passed in from firerunner
+    start_monotime_us: u64,
+    start_cputime_us: u64,
     // Snapshot
     // load
     load_dir: Option<PathBuf>,
@@ -640,6 +672,13 @@ struct Vmm {
     // added to notify Firerunner we've booted up
     ready_notifier: Option<File>,
     notifier_id: u32,
+
+    // restore memory by copying
+    copy_base: bool,
+    memory_to_load: Option<File>,
+    huge_page: bool,
+    diff_dirs: Vec<PathBuf>,
+    copy_diff: bool,
 }
 
 impl Vmm {
@@ -648,10 +687,7 @@ impl Vmm {
         api_event_fd: EventFd,
         from_api: Receiver<Box<VmmAction>>,
         seccomp_level: u32,
-        second_serial: Option<File>,
-        second_input: Option<File>,
-        ready_notifier: Option<File>,
-        notifier_id: u32,
+        snapfaas_config: SnapFaaSConfig,
     ) -> Result<Self> {
         let mut epoll_context = EpollContext::new()?;
         // If this fails, it's fatal; using expect() to crash.
@@ -671,33 +707,22 @@ impl Vmm {
         let kvm = KvmContext::new()?;
         let vm = Vm::new(kvm.fd()).map_err(Error::Vm)?;
 
+        let start_monotime_us = api_shared_info.read().expect("Failed to read shared info").start_monotime_us;
+        let start_cputime_us = api_shared_info.read().expect("Failed to read shared info").start_cputime_us;
         // Snapshot
-        let mut load_dir
-            = api_shared_info.read().expect("Failed to read shared info").load_dir.clone();
-        let dump_dir 
-            = api_shared_info.read().expect("Failed to read shared info").dump_dir.clone();
-        let snap_to_load = match load_dir {
-            Some(ref mut dir) => {
-                dir.push("snapshot.json");
-                let reader = BufReader::new(File::open(dir.as_path())
-                                            .expect("Failed to open snapshot.json"));
-                let snapshot: Snapshot = serde_json::from_reader(reader).expect("Bad snapshot.json");
-                Some(snapshot)
-            },
-            None => None,
-        };
+        let dump_dir = snapfaas_config.dump_dir;
         let (snap_sender, snap_receiver) = match dump_dir {
             Some(_) => {
                 let (sender, receiver) = channel();
                 (Some(sender), Some(receiver))
-            }, 
+            },
             None => (None, None)
         };
         let evtfd = EventFd::new().expect("Cannot create snap event fd");
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
-        match second_input {
+        match snapfaas_config.second_input {
             Some(ref input) => {
                 epoll_context
                     .add_event(input.try_clone()
@@ -718,7 +743,9 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager: LegacyDeviceManager::new(second_serial, second_input).map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager:
+                LegacyDeviceManager::new(snapfaas_config.second_serial, snapfaas_config.second_input)
+                .map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -730,15 +757,22 @@ impl Vmm {
             from_api,
             write_metrics_event,
             seccomp_level,
-            load_dir,
-            snap_to_load,
+            start_monotime_us,
+            start_cputime_us,
+            load_dir: snapfaas_config.load_dir,
+            snap_to_load: snapfaas_config.parsed_json,
             dump_dir,
             snap_to_dump: None,
             snap_receiver,
             snap_sender,
             snap_evt,
-            ready_notifier,
-            notifier_id,
+            ready_notifier: snapfaas_config.ready_notifier,
+            notifier_id: snapfaas_config.notifier_id,
+            copy_base: snapfaas_config.copy_base,
+            memory_to_load: snapfaas_config.memory_to_load,
+            huge_page: snapfaas_config.huge_page,
+            diff_dirs: snapfaas_config.diff_dirs,
+            copy_diff: snapfaas_config.copy_diff,
         })
     }
 
@@ -772,6 +806,55 @@ impl Vmm {
         } else {
             Err(DriveError::BlockDeviceUpdateFailed)
         }
+    }
+
+    // Attaches all block devices from the BlockDevicesConfig.
+    fn attach_block_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        assert!(self.load_dir.is_some());
+        let epoll_context = &mut self.epoll_context;
+        for drive_config in self.block_device_configs.config_list.iter_mut() {
+            // Add the block device from file.
+            let block_file = OpenOptions::new()
+                .read(true)
+                .write(!drive_config.is_read_only)
+                .open(&drive_config.path_on_host)
+                .map_err(StartMicrovmError::OpenBlockDevice)?;
+
+            let (epoll_config, handler_idx) = epoll_context.allocate_virtio_block_tokens();
+            self.drive_handler_id_map
+                .insert(drive_config.drive_id.clone(), handler_idx);
+            let rate_limiter = match drive_config.rate_limiter {
+                Some(rlim_cfg) => Some(
+                    rlim_cfg
+                        .into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            let block_box = Box::new(
+                devices::virtio::Block::new(
+                    block_file,
+                    drive_config.is_read_only,
+                    epoll_config,
+                    rate_limiter,
+                )
+                .map_err(StartMicrovmError::CreateBlockDevice)?,
+            );
+            device_manager
+                .register_device(
+                    self.vm.get_fd(),
+                    block_box,
+                    None,
+                    Some(drive_config.drive_id.clone()),
+                )
+                .map_err(StartMicrovmError::RegisterBlockDevice)?;
+        }
+
+        Ok(())
     }
 
     // Attaches all block devices from the BlockDevicesConfig.
@@ -811,20 +894,22 @@ impl Vmm {
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
-            if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
-                kernel_config
-                    .cmdline
-                    .insert_str(format!(
-                        " root=PARTUUID={}",
-                        //The unwrap is safe as we are firstly checking that partuuid is_some().
-                        drive_config.get_partuuid().unwrap()
-                    ))
-                    .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
-                if drive_config.is_read_only {
+            if self.load_dir.is_none() {
+                if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
                     kernel_config
                         .cmdline
-                        .insert_str(" ro")
+                        .insert_str(format!(
+                            " root=PARTUUID={}",
+                            //The unwrap is safe as we are firstly checking that partuuid is_some().
+                            drive_config.get_partuuid().unwrap()
+                        ))
                         .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
+                    if drive_config.is_read_only {
+                        kernel_config
+                            .cmdline
+                            .insert_str(" ro")
+                            .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
+                    }
                 }
             }
 
@@ -853,12 +938,60 @@ impl Vmm {
                 .register_device(
                     self.vm.get_fd(),
                     block_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     Some(drive_config.drive_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterBlockDevice)?;
         }
 
+        Ok(())
+    }
+
+    fn attach_net_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        for cfg in self.network_interface_configs.iter_mut() {
+            let (epoll_config, handler_idx) = self.epoll_context.allocate_virtio_net_tokens();
+            self.net_handler_id_map
+                .insert(cfg.iface_id.clone(), handler_idx);
+
+            let allow_mmds_requests = cfg.allow_mmds_requests();
+            let rx_rate_limiter = match cfg.rx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+            let tx_rate_limiter = match cfg.tx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            if let Some(tap) = cfg.take_tap() {
+                let net_box = Box::new(
+                    devices::virtio::Net::new_with_tap(
+                        tap,
+                        cfg.guest_mac(),
+                        epoll_config,
+                        rx_rate_limiter,
+                        tx_rate_limiter,
+                        allow_mmds_requests,
+                    )
+                    .map_err(StartMicrovmError::CreateNetDevice)?,
+                );
+
+                device_manager
+                    .register_device(self.vm.get_fd(), net_box, None, None)
+                    .map_err(StartMicrovmError::RegisterNetDevice)?;
+            } else {
+                return Err(StartMicrovmError::NetDeviceNotConfigured)?;
+            }
+        }
         Ok(())
     }
 
@@ -907,11 +1040,36 @@ impl Vmm {
                 );
 
                 device_manager
-                    .register_device(self.vm.get_fd(), net_box, &mut kernel_config.cmdline, None)
+                    .register_device(self.vm.get_fd(), net_box, Some(&mut kernel_config.cmdline), None)
                     .map_err(StartMicrovmError::RegisterNetDevice)?;
             } else {
                 return Err(StartMicrovmError::NetDeviceNotConfigured)?;
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "vsock")]
+    fn attach_vsock_devices_snapshot(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+        guest_mem: &GuestMemory,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        for cfg in self.vsock_device_configs.iter() {
+            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+
+            let vsock_box = Box::new(
+                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                    .map_err(StartMicrovmError::CreateVsockDevice)?,
+            );
+            device_manager
+                .register_device(
+                    self.vm.get_fd(),
+                    vsock_box,
+                    None,
+                    None,
+                )
+                .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
         Ok(())
     }
@@ -938,7 +1096,7 @@ impl Vmm {
                 .register_device(
                     self.vm.get_fd(),
                     vsock_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     None,
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
@@ -991,8 +1149,22 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        self.guest_memory =
-            Some(GuestMemory::new(&arch_mem_regions).map_err(StartMicrovmError::GuestMemory)?);
+        if let Some(ref dir) = self.load_dir {
+            self.guest_memory =
+                Some(GuestMemory::new_from_file(
+                        &arch_mem_regions,
+                        dir.clone(),
+                        &self.diff_dirs,
+                        self.huge_page,
+                        self.copy_base, // a base snapshot should always be provided
+                        self.copy_diff && self.diff_dirs.len() > 0, // only valid when a diff snapshot is provided
+                        self.load_dir.is_some() && self.dump_dir.is_some(), // only clear soft dirty bits when generating diff snapshots
+                    ).map_err(StartMicrovmError::GuestMemory)?);
+        } else {
+            self.guest_memory =
+                Some(GuestMemory::new(&arch_mem_regions, self.dump_dir.is_some())
+                    .map_err(StartMicrovmError::GuestMemory)?);
+        }
         self.vm
             .memory_init(
                 self.guest_memory
@@ -1003,7 +1175,6 @@ impl Vmm {
                 &self.kvm,
             )
             .map_err(StartMicrovmError::ConfigureVm)?;
-
         Ok(())
     }
 
@@ -1030,10 +1201,17 @@ impl Vmm {
             (arch::IRQ_BASE, arch::IRQ_MAX),
         );
 
-        self.attach_block_devices(&mut device_manager)?;
-        self.attach_net_devices(&mut device_manager)?;
-        #[cfg(feature = "vsock")]
-        self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+        if self.load_dir.is_some() {
+            self.attach_block_devices_snapshot(&mut device_manager)?;
+            self.attach_net_devices_snapshot(&mut device_manager)?;
+            #[cfg(feature = "vsock")]
+            self.attach_vsock_devices_snapshot(&mut device_manager, &guest_mem)?;
+        } else {
+            self.attach_block_devices(&mut device_manager)?;
+            self.attach_net_devices(&mut device_manager)?;
+            #[cfg(feature = "vsock")]
+            self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+        }
 
         self.mmio_device_manager = Some(device_manager);
         Ok(())
@@ -1308,12 +1486,79 @@ impl Vmm {
         bus.write(base+0x70, &data);
 
         let queues =
-            &self.snap_to_load.as_ref().unwrap().virtio_states[index as usize].queues;
+            &self.snap_to_load.as_ref().unwrap().block_states[index as usize].queues;
         self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
+    }
+
+    fn restore_net_device(&mut self, index: u64) {
+        //manually replay writes to mmio device
+        // index: network devices come after block devices
+        let base = 0xd000_0000u64 + (index + self.drive_handler_id_map.len() as u64)*4096;
+        let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+        let mut data = [0u8; 4];
+        let zero = [0u8; 4];
+
+        // 0x70: update_driver_status
+        // 0x14: features_select
+        // 0x20: ack_features
+        // 0x24: acked_features_select
+        // 0x30: queue_select
+        bus.write(base+0x70, &zero);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 3);
+        bus.write(base+0x70, &data);
+
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x14, &data);
+        bus.write(base+0x14, &zero);
+
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x24, &data);
+        bus.write(base+0x20, &data);
+
+        bus.write(base+0x24, &zero);
+        LittleEndian::write_u32(data.as_mut(), 19619);
+        bus.write(base+0x20, &data);
+
+        LittleEndian::write_u32(data.as_mut(), 11);
+        bus.write(base+0x70, &data);
+
+        // select queue 0
+        bus.write(base+0x30, &zero);
+        // states checked by device activation operation
+        // queue size and queue ready
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+
+        // select queue 1
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x30, &data);
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+
+        // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // Activation requires all queues in a valid state:
+        //     1. must be marked as ready
+        //     2. size must not be zero and cannot exceed max_size
+        //     3. descriptor table/available ring/used ring must completely reside in guest memory
+        //     4. alignment constraints must be satisfied
+        LittleEndian::write_u32(data.as_mut(), 15);
+        bus.write(base+0x70, &data);
+
+        let queues =
+            &self.snap_to_load.as_ref().unwrap().net_states[index as usize].queues;
+        self.epoll_context.get_device_handler(index as usize + self.drive_handler_id_map.len())
+            .unwrap().set_queues(&queues);
     }
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
+        let t00 = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::StartMicrovm(
                 ErrorKind::User,
@@ -1321,12 +1566,14 @@ impl Vmm {
             ));
         }
         let request_ts = TimestampUs {
-            time_us: now_monotime_us(),
-            cputime_us: now_cputime_us(),
+            time_us: self.start_monotime_us,
+            cputime_us: self.start_cputime_us,
         };
 
-        self.check_health()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::User, e))?;
+        if self.load_dir.is_none() {
+            self.check_health()
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::User, e))?;
+        }
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1336,6 +1583,7 @@ impl Vmm {
         self.init_guest_memory()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+        let t0 = now_monotime_us();
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
@@ -1345,18 +1593,13 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         let mut entry_addr = GuestAddress(0);
-        if let Some(ref mut dir) = self.load_dir {
-            dir.set_file_name("runtime_mem_dump");
-            let t0 = now_monotime_us();
-            let mem_dump = File::open(dir.as_path()).expect("Missing runtime_mem_dump");
-            let reader = &mut BufReader::new(mem_dump);
-            self.guest_memory.clone().unwrap().load_initialized_memory(reader)
-                .expect("Failed to load memory dump");
-            let t1 = now_monotime_us();
+        if let Some(_) = self.load_dir.as_ref() {
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
-            let t2 = now_monotime_us();
+            for i in 0..self.net_handler_id_map.len() {
+                self.restore_net_device(i as u64);
+            }
             let serial_state = devices::legacy::SerialState {
                 interrupt_enable: 5,
                 interrupt_identification: 1,
@@ -1369,8 +1612,6 @@ impl Vmm {
             };
             self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
                 .set_serial_state(serial_state);
-            info!("restoring memory took {} ms", (t1-t0)/1000);
-            info!("restoring block devices took {} us", t2-t1);
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1382,18 +1623,21 @@ impl Vmm {
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t1 = now_monotime_us();
 
-        self.epoll_context.disable_stdin_event();
+        //self.epoll_context.disable_stdin_event();
 
 
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t2 = now_monotime_us();
 
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
                 // TODO: currently only block devices
-                virtio_states: vec![Default::default(); self.drive_handler_id_map.len()],
+                block_states: vec![Default::default(); self.drive_handler_id_map.len()],
+                net_states: vec![Default::default(); self.net_handler_id_map.len()],
                 vcpu_states: vec![Default::default(); self.vm_config.vcpu_count.unwrap() as usize],
                 ..Default::default()
             });
@@ -1401,6 +1645,9 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        let t3 = now_monotime_us();
+        // fast (28us) and does not affect total boot latency measurement
+        //eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -1595,18 +1842,22 @@ impl Vmm {
                 }
             }
             if exit_on_dump {
-                // dump virtio (now only block) devices' queue states
+                // dump block devices' queue states
                 for i in 0..self.drive_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().virtio_states[i].queues =
+                    self.snap_to_dump.as_mut().unwrap().block_states[i].queues =
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
+                for i in 0..self.net_handler_id_map.len() {
+                    self.snap_to_dump.as_mut().unwrap().net_states[i].queues =
+                        self.epoll_context.get_device_handler(i + self.drive_handler_id_map.len())
+                            .unwrap().get_queues();
+                }
 
-                self.dump_dir.as_mut().unwrap().push("runtime_mem_dump");
-                self.vm.dump_memory(self.dump_dir.as_ref().unwrap());
+                self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
                     .expect("Failed dumping irqchip");
                 let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
-                self.dump_dir.as_mut().unwrap().set_file_name("snapshot.json");
+                self.dump_dir.as_mut().unwrap().push("snapshot.json");
                 std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                     .expect("Failed to write snapshot.json");
 
@@ -1644,11 +1895,41 @@ impl Vmm {
         0
     }
 
+    // Count the list of pages dirtied since the last call to this function.
+    // Intended for diff snapshot generation
+    //#[cfg(target_arch = "x86_64")]
+    //fn get_dirty_page_list(&mut self) -> Vec<usize> {
+    //    if let Some(ref mem) = self.guest_memory {
+    //        let dirty_pages = mem.map_and_fold(
+    //            Vec::new(),
+    //            |(slot, memory_region)| {
+    //                let bitmap = self
+    //                    .vm
+    //                    .get_fd()
+    //                    .get_dirty_log(slot as u32, memory_region.size());
+    //                let base_gfn = memory_region.end_addr() - memory_region.size();
+    //                match bitmap {
+    //                    Ok(v) => v
+    //                        .iter()
+    //                        .fold(Vec::new(), |init, page| init.append(page.count_ones()) ),
+    //                    Err(_) => Vec::new(),
+    //                }
+    //            },
+    //            |mut dirty_pages, mut region_dirty_pages| dirty_pages.append(&mut region_dirty_pages),
+    //        );
+    //        return dirty_pages;
+    //    }
+    //    Vec::new()
+    //}
+
     fn configure_boot_source(
         &mut self,
         kernel_image_path: String,
         kernel_cmdline: Option<String>,
     ) -> std::result::Result<VmmData, VmmActionError> {
+        if self.load_dir.is_some() {
+            return Ok(VmmData::Empty);
+        }
         if self.is_instance_initialized() {
             return Err(VmmActionError::BootSource(
                 ErrorKind::User,
@@ -2187,17 +2468,13 @@ pub fn start_vmm_thread(
     api_event_fd: EventFd,
     from_api: Receiver<Box<VmmAction>>,
     seccomp_level: u32,
-    second_serial: Option<File>,
-    second_input: Option<File>,
-    ready_notifier: Option<File>,
-    notifier_id: u32,
+    snapfaas_config: SnapFaaSConfig,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("fc_vmm".to_string())
         .spawn(move || {
             // If this fails, consider it fatal. Use expect().
-            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level,
-                                   second_serial, second_input, ready_notifier, notifier_id)
+            let mut vmm = Vmm::new(api_shared_info, api_event_fd, from_api, seccomp_level, snapfaas_config)
                 .expect("Cannot create VMM");
             match vmm.run_control() {
                 Ok(()) => {

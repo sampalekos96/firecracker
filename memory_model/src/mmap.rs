@@ -9,13 +9,17 @@
 //! mmap object leaves scope.
 
 use std;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::fs::File;
 use std::ptr::null_mut;
+use std::os::unix::io::RawFd;
+use std::collections::BTreeMap;
 
 use libc;
 
 use DataInit;
 
+const PM_ENTRY_SIZE:u64 = 8;
 /// Errors associated with memory mapping.
 #[derive(Debug)]
 pub enum Error {
@@ -74,6 +78,35 @@ impl MemoryMapping {
         })
     }
 
+    /// Creates an file-mapped memory of `size` bytes.
+    ///
+    /// # Arguments
+    /// * `size` - Size of memory region in bytes.
+    pub fn new_from_file(size: usize, fd: RawFd, offset: usize, hugepage: bool, share: bool) -> Result<MemoryMapping> {
+        let mut flags = libc::MAP_NORESERVE;
+        if hugepage {
+            flags |= libc::MAP_HUGETLB;
+        }
+        flags |= if share { libc::MAP_SHARED } else { libc::MAP_PRIVATE };
+        let addr = unsafe {
+            libc::mmap(
+                null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                flags,
+                fd,
+                offset as libc::off_t,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return Err(Error::SystemCallFailed(io::Error::last_os_error()));
+        }
+        Ok(MemoryMapping {
+            addr: addr as *mut u8,
+            size,
+        })
+    }
+
     /// Returns a pointer to the beginning of the memory region.  Should only be
     /// used for passing this region to ioctls for setting guest memory.
     pub fn as_ptr(&self) -> *mut u8 {
@@ -85,6 +118,57 @@ impl MemoryMapping {
         self.size
     }
 
+    // Helper function
+    fn get_pfn(num: u64) -> u64 {
+        let mask = 1 << 55 - 1;
+        num & mask
+    }
+
+    // helper function to get the bit at `bit_pos` of `num`
+    fn get_bit(num: u64, bit_pos: u64) -> u64 {
+        (num & (1u64 << bit_pos)) >> bit_pos
+    }
+
+    /// Read /proc/PID/pagemap, return a mapping between host and guest physical page numbers
+    /// and the list of dirty guest physical page numbers.
+    /// If `pfn_to_gfn` is true, the mapping is from host to guest.
+    /// Otherwise, the mapping is from guest to host.
+    pub fn get_pagemap(
+        &self,
+        pfn_to_gfn: bool,
+        page_i_base: u64,
+        page_size: u64,
+    ) -> (BTreeMap<u64, u64>, Vec<u64>) {
+        let path = format!("/proc/{}/pagemap", std::process::id());
+        let addr = self.addr as u64;
+        let size = self.size as u64;
+        let offset = addr/page_size*PM_ENTRY_SIZE;
+
+        let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
+        pagemap.seek(SeekFrom::Start(offset)).expect("Failed to seek /proc/PID/pagemap");
+
+        let num_pages = (size / page_size) as usize;
+        let mut buf = [0 as u8; 8];
+        let mut mapping = BTreeMap::new();
+        let mut dirty_list = Vec::new();
+        for page_i in 0..num_pages {
+            pagemap.read_exact(&mut buf).err();
+            let entry = u64::from_le_bytes(buf);
+            // check if the page is present
+            if MemoryMapping::get_bit(entry, 63) == 1 {
+                let pfn = MemoryMapping::get_pfn(entry);
+                if pfn_to_gfn {
+                    mapping.insert(pfn, page_i_base + page_i as u64);
+                } else {
+                    mapping.insert(page_i_base + page_i as u64, pfn);
+                }
+            }
+            if MemoryMapping::get_bit(entry, 55) == 1 {
+                dirty_list.push(page_i_base + page_i as u64);
+            }
+        }
+        (mapping, dirty_list)
+    }
     /// Writes a slice to the memory region at the specified offset.
     /// Returns the number of bytes written.  The number of bytes written can
     /// be less than the length of the slice if there isn't enough room in the
@@ -285,8 +369,9 @@ impl MemoryMapping {
         std::slice::from_raw_parts(self.addr, self.size)
     }
 
+    /// as_mut_slice implements as_mut_slice semantic for MemoryMapping
     #[allow(clippy::mut_from_ref)]
-    unsafe fn as_mut_slice(&self) -> &mut [u8] {
+    pub unsafe fn as_mut_slice(&self) -> &mut [u8] {
         // This is safe because we mapped the area at addr ourselves, so this slice will not
         // overflow. However, it is possible to alias.
         std::slice::from_raw_parts_mut(self.addr, self.size)

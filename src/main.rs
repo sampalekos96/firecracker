@@ -28,6 +28,7 @@ use std::sync::{Arc, RwLock};
 
 use api_server::{ApiServer, Error};
 use fc_util::validators::validate_instance_id;
+use fc_util::{now_monotime_us, now_cputime_us};
 use logger::{Metric, LOGGER, METRICS};
 use mmds::MMDS;
 use vmm::vmm_config::instance_info::{InstanceInfo, InstanceState};
@@ -152,9 +153,8 @@ fn main() {
         state: InstanceState::Uninitialized,
         id: instance_id,
         vmm_version: crate_version!().to_string(),
-        // TODO: turn on snapshot through API server
-        load_dir: None,
-        dump_dir: None,
+        start_monotime_us: now_monotime_us(),
+        start_cputime_us: now_cputime_us(),
     }));
     let mmds_info = MMDS.clone();
     let (to_vmm, from_api) = channel();
@@ -165,8 +165,22 @@ fn main() {
         .get_event_fd_clone()
         .expect("Cannot clone API eventFD.");
 
+    let snapfaas_config = vmm::SnapFaaSConfig {
+        load_dir: None,
+        parsed_json: None,
+        memory_to_load: None,
+        diff_dirs: Vec::new(),
+        dump_dir: None,
+        ready_notifier: None,
+        notifier_id: 0,
+        second_serial: None,
+        second_input: None,
+        copy_base: false,
+        copy_diff: false,
+        huge_page: false,
+    };
     let _vmm_thread_handle =
-        vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, None, None, None, 0);
+        vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, snapfaas_config);
 
     match server.bind_and_run(bind_path, start_time_us, start_time_cpu_us, seccomp_level) {
         Ok(_) => (),
