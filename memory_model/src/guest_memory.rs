@@ -28,6 +28,8 @@ pub enum Error {
     InvalidGuestAddress(GuestAddress),
     /// Failure in finding a guest address range in any memory regions mapped by this guest.
     InvalidGuestAddressRange(GuestAddress, usize),
+    /// Failure in finding a host address in any memory regions mapped by this guest.
+    InvalidHostAddress(u64),
     /// Failure in accessing the memory located at some address.
     MemoryAccess(GuestAddress, mmap::Error),
     /// Failure in creating an anonymous shared mapping.
@@ -836,6 +838,24 @@ impl GuestMemory {
             // bounds.
             Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
         })
+    }
+
+    /// Only used by vhost-vsock snapshotting
+    pub fn get_guest_address(&self, host_addr: u64) -> Result<GuestAddress> {
+        let mut guest_addr: Option<GuestAddress> = None;
+        for region in self.regions.iter() {
+            let host_base = region.mapping.as_ptr() as u64;
+            if host_addr >= host_base && host_addr < host_base + region.size() as u64 {
+                let offset = host_addr - host_base;
+                guest_addr = Some(region.guest_base.unchecked_add(offset as usize));
+                break;
+            }
+        }
+        if let Some(guest_addr) = guest_addr {
+            Ok(guest_addr)
+        } else {
+            Err(Error::InvalidHostAddress(host_addr))
+        }
     }
 
     /// Applies two functions, specified as callbacks, on the inner memory regions.

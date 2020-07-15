@@ -146,6 +146,8 @@ pub struct Snapshot {
     pub block_states: Vec<VirtioState>,
     /// Virtio net device
     pub net_states: Vec<VirtioState>,
+    /// Virtio vsock device
+    pub vsock_state: VirtioState,
     /// Vcpu
     pub vcpu_states: Vec<VcpuState>,
 }

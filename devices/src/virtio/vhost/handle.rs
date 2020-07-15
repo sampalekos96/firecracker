@@ -83,8 +83,18 @@ where
     }
 
     fn get_queues(&self) -> Vec<Queue> {
-        // required by EpollHandler
-        Vec::new()
+        let mut queues = Vec::new();
+        for idx in 0..2 {
+            let vring_addr = self.get_device().get_vring_addr(idx).expect("get_vring_addr");
+            let vring_base = self.get_device().get_vring_base(idx).expect("get_vring_base");
+            let mut q = Queue::new(super::vsock::QUEUE_SIZE);
+            q.desc_table = self.get_device().mem().get_guest_address(vring_addr.desc_user_addr).expect("get_guest_address");
+            q.avail_ring = self.get_device().mem().get_guest_address(vring_addr.avail_user_addr).expect("get_guest_address");
+            q.used_ring = self.get_device().mem().get_guest_address(vring_addr.used_user_addr).expect("get_guest_address");
+            q.set_next_avail(vring_base.num as u16);
+            queues.push(q);
+        }
+        queues
     }
 
     fn handle_event(

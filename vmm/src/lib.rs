@@ -1556,6 +1556,9 @@ impl Vmm {
             .unwrap().set_queues(&queues);
     }
 
+    fn restore_vsock() {
+    }
+
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
         let t00 = now_monotime_us();
@@ -1842,16 +1845,23 @@ impl Vmm {
                 }
             }
             if exit_on_dump {
-                // dump block devices' queue states
+                let snapshot = self.snap_to_dump.as_mut().unwrap();
+                // dump block device state, assume all block devices are attached first
                 for i in 0..self.drive_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().block_states[i].queues =
+                    snapshot.block_states[i].queues =
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
+                // dump network device state, assume network devices are attached after all block
+                // devices
                 for i in 0..self.net_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().net_states[i].queues =
+                    snapshot.net_states[i].queues =
                         self.epoll_context.get_device_handler(i + self.drive_handler_id_map.len())
                             .unwrap().get_queues();
                 }
+                // dump vsock state, assume vsock is the last attached virtio device
+                snapshot.vsock_state.queues = self.epoll_context.get_device_handler(
+                        self.drive_handler_id_map.len() + self.net_handler_id_map.len())
+                    .unwrap().get_queues();
 
                 self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())

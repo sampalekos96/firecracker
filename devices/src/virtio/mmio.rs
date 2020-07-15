@@ -140,6 +140,11 @@ impl MmioDevice {
         self.interrupt_evt.as_ref()
     }
 
+    /// Restores queues from a snapshot
+    pub fn restore_queues(&mut self, queues: Vec<Queue>) {
+        self.queues = queues;
+    }
+
     fn check_driver_status(&self, set: u32, clr: u32) -> bool {
         self.driver_status & (set | clr) == set
     }

@@ -19,7 +19,7 @@ use epoll;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-const QUEUE_SIZE: u16 = 256;
+pub const QUEUE_SIZE: u16 = 256;
 const NUM_QUEUES: usize = 3;
 const QUEUE_SIZES: &[u16] = &[QUEUE_SIZE; NUM_QUEUES];
 

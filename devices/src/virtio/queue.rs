@@ -243,6 +243,10 @@ impl Queue {
         }
     }
 
+    pub fn set_next_avail(&mut self, next_avail: u16) {
+        self.next_avail = Wrapping(next_avail);
+    }
+    
     pub fn get_max_size(&self) -> u16 {
         self.max_size
     }
