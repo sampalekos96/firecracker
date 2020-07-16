@@ -1556,7 +1556,58 @@ impl Vmm {
             .unwrap().set_queues(&queues);
     }
 
-    fn restore_vsock() {
+    fn restore_vsock(&mut self) {
+        let mmio_offset = self.drive_handler_id_map.len() + self.net_handler_id_map.len();
+        let base = 0xd000_0000u64 + 4096 * mmio_offset as u64;
+        let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+        let mut data = [0u8; 4];
+        let zero = [0u8; 4];
+
+        bus.write(base+0x70, &zero);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 3);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 11);
+        bus.write(base+0x70, &data);
+
+        let queues =
+            &self.snap_to_load.as_ref().unwrap().vsock_state.queues;
+        for idx in 0..2usize {
+            LittleEndian::write_u32(data.as_mut(), idx as u32);
+            bus.write(base+0x30, &data);
+            // states checked by device activation operation
+            // queue size, queue location, queue ready
+            LittleEndian::write_u32(data.as_mut(), 256);
+            bus.write(base+0x38, &data);
+            LittleEndian::write_u32(data.as_mut(), queues[idx].desc_table.offset() as u32);
+            bus.write(base+0x80, &data);
+            bus.write(base+0x84, &zero);
+            LittleEndian::write_u32(data.as_mut(), queues[idx].avail_ring.offset() as u32);
+            bus.write(base+0x90, &data);
+            bus.write(base+0x94, &zero);
+            LittleEndian::write_u32(data.as_mut(), queues[idx].used_ring.offset() as u32);
+            bus.write(base+0xa0, &data);
+            bus.write(base+0xa4, &zero);
+
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x44, &data);
+        }
+        LittleEndian::write_u32(data.as_mut(), 2);
+        bus.write(base+0x30, &data);
+        LittleEndian::write_u32(data.as_mut(), 256);
+        bus.write(base+0x38, &data);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x44, &data);
+
+        // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // Activation requires all queues in a valid state:
+        //     1. must be marked as ready
+        //     2. size must not be zero and cannot exceed max_size
+        //     3. descriptor table/available ring/used ring must completely reside in guest memory
+        //     4. alignment constraints must be satisfied
+        LittleEndian::write_u32(data.as_mut(), 15);
+        bus.write(base+0x70, &data);
     }
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
@@ -1603,6 +1654,7 @@ impl Vmm {
             for i in 0..self.net_handler_id_map.len() {
                 self.restore_net_device(i as u64);
             }
+            self.restore_vsock();
             let serial_state = devices::legacy::SerialState {
                 interrupt_enable: 5,
                 interrupt_identification: 1,
