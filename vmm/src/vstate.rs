@@ -549,9 +549,8 @@ impl Vcpu {
                      snap_barrier: &Arc<Barrier>,
                      vcpu_snap_evt: &EventFd,
                      snap_sender: &Option<Sender<VcpuInfo>>,
-                     from_snapshot: bool,
-                     ready_notifier: &Option<File>,
-                     notifier_id: u32) -> Result<()> {
+                     //from_snapshot: bool,
+                     ) -> Result<()> {
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -585,12 +584,6 @@ impl Vcpu {
                         panic!("mounting app file system failed");
                     }
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
-                        if self.ts_126.len() == 0 {
-                            //super::Vmm::log_boot_time(&self.create_ts);
-                            if let Some(mut notifier) = ready_notifier.as_ref() {
-                                notifier.write_all(&notifier_id.to_le_bytes()).expect("Failed to notify that boot is complete");
-                            }
-                        }
                         self.ts_126.push(TimestampUs {
                             time_us: now_monotime_us(),
                             cputime_us: now_cputime_us()
@@ -677,9 +670,7 @@ impl Vcpu {
         vcpu_exit_evt: EventFd,
         vcpu_snap_evt: EventFd,
         snap_sender: Option<Sender<VcpuInfo>>,
-        from_snapshot: bool,
-        ready_notifier: Option<File>,
-        notifier_id: u32,
+        //from_snapshot: bool,
     ) {
         // Load seccomp filters for this vCPU thread.
         // Execution panics if filters cannot be loaded, use --seccomp-level=0 if skipping filters
@@ -694,7 +685,7 @@ impl Vcpu {
         thread_barrier.wait();
 
         loop {
-            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender, from_snapshot, &ready_notifier, notifier_id);
+            let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender);
             if !ret.is_ok() {
                 match ret.err() {
                     _ => {

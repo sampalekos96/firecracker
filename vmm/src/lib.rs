@@ -262,14 +262,8 @@ pub struct SnapFaaSConfig {
     pub memory_to_load: Option<File>,
     /// directory to dump to
     pub dump_dir: Option<PathBuf>,
-    /// notifier to send ready signal
-    pub ready_notifier: Option<File>,
     /// id of this instance
-    pub notifier_id: u32,
-    /// second serial output
-    pub second_serial: Option<File>,
-    /// second serial input
-    pub second_input: Option<File>,
+    pub cid: u32,
     /// restore base memory by copying
     pub copy_base: bool,
     /// restore diff memory by copying
@@ -422,7 +416,6 @@ impl KvmContext {
 enum EpollDispatch {
     Exit,
     Stdin,
-    SecondInput,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
@@ -669,9 +662,7 @@ struct Vmm {
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
 
-    // added to notify Firerunner we've booted up
-    ready_notifier: Option<File>,
-    notifier_id: u32,
+    cid: u32,
 
     // restore memory by copying
     copy_base: bool,
@@ -722,17 +713,6 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
-        match snapfaas_config.second_input {
-            Some(ref input) => {
-                epoll_context
-                    .add_event(input.try_clone()
-                               .expect("Cannot clone file handler to second input"),
-                               EpollDispatch::SecondInput)
-                    .expect("Cannot add input pipe file discriptor to epoll.");
-            },
-            None => {}
-        }
-
         Ok(Vmm {
             kvm,
             vm_config: VmConfig::default(),
@@ -743,9 +723,7 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager:
-                LegacyDeviceManager::new(snapfaas_config.second_serial, snapfaas_config.second_input)
-                .map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -766,8 +744,7 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
-            ready_notifier: snapfaas_config.ready_notifier,
-            notifier_id: snapfaas_config.notifier_id,
+            cid: snapfaas_config.cid,
             copy_base: snapfaas_config.copy_base,
             memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
@@ -1317,13 +1294,8 @@ impl Vmm {
             let mut vcpu = vcpus.pop().unwrap();
 
             let seccomp_level = self.seccomp_level;
-            let from_snapshot = self.load_dir.is_some();
+            //let from_snapshot = self.load_dir.is_some();
             let sender = self.snap_sender.clone();
-            let ready_notifier = match self.ready_notifier {
-                Some(ref notifier) => Some(notifier.try_clone().expect("Failed to clone write")),
-                None => None,
-            };
-            let notifier_id = self.notifier_id;
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
@@ -1334,9 +1306,8 @@ impl Vmm {
                                  vcpu_exit_evt,
                                  vcpu_snap_evt,
                                  sender,
-                                 from_snapshot,
-                                 ready_notifier,
-                                 notifier_id,);
+                                 //from_snapshot,
+                                 );
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1665,8 +1636,6 @@ impl Vmm {
                 scratch: 0,
                 baud_divisor: 12,
             };
-            self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
-                .set_serial_state(serial_state);
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1878,20 +1847,6 @@ impl Vmm {
                             if vcpu_snap_cnt == self.vcpus_handles.len() {
                                 exit_on_dump = true;
                             }
-                        }
-                        EpollDispatch::SecondInput => {
-                            let mut out = String::new();
-                            self.legacy_device_manager.second_input.as_mut().unwrap().read_line(&mut out)
-                                .expect("Failed to read from second input");
-                            assert_eq!(out.as_bytes().last().cloned().unwrap(), '\n' as u8);
-                            self.legacy_device_manager
-                                .second_serial
-                                .as_mut()
-                                .unwrap()
-                                .lock()
-                                .expect("Failed to process second input event due to poisoned lock")
-                                .queue_input_bytes(out.as_bytes())
-                                .map_err(Error::Serial)?;
                         }
                     }
                 }
