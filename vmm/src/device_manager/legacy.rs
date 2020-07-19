@@ -6,9 +6,8 @@
 // found in the THIRD-PARTY file.
 
 use std::fmt;
-use std::io::{self, stdout, Write, BufReader};
+use std::io::{self, stdout};
 use std::sync::{Arc, Mutex};
-use std::fs::File;
 
 use devices;
 use sys_util::{EventFd, Terminal};

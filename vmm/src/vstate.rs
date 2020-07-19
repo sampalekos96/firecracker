@@ -8,13 +8,10 @@
 use fc_util::{now_monotime_us, now_cputime_us};
 
 use std::io;
-use std::io::BufWriter;
 use std::result;
 use std::sync::{Arc, Barrier};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -141,7 +138,6 @@ pub struct Snapshot {
     pub pic_master: kvm_pic_state,
     /// PIC slave
     pub pic_slave: kvm_pic_state,
-    // TODO: currently only block devices
     /// Virtio block device
     pub block_states: Vec<VirtioState>,
     /// Virtio net device

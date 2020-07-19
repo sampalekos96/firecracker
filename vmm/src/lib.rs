@@ -53,7 +53,6 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::{BufReader, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -262,8 +261,6 @@ pub struct SnapFaaSConfig {
     pub memory_to_load: Option<File>,
     /// directory to dump to
     pub dump_dir: Option<PathBuf>,
-    /// id of this instance
-    pub cid: u32,
     /// restore base memory by copying
     pub copy_base: bool,
     /// restore diff memory by copying
@@ -662,8 +659,6 @@ struct Vmm {
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
 
-    cid: u32,
-
     // restore memory by copying
     copy_base: bool,
     memory_to_load: Option<File>,
@@ -744,7 +739,6 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
-            cid: snapfaas_config.cid,
             copy_base: snapfaas_config.copy_base,
             memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
@@ -1626,16 +1620,6 @@ impl Vmm {
                 self.restore_net_device(i as u64);
             }
             self.restore_vsock();
-            let serial_state = devices::legacy::SerialState {
-                interrupt_enable: 5,
-                interrupt_identification: 1,
-                line_control: 19,
-                line_status: 96,
-                modem_control: 11,
-                modem_status: 176,
-                scratch: 0,
-                baud_divisor: 12,
-            };
         } else {
             entry_addr = self
                 .load_kernel()
