@@ -403,6 +403,7 @@ impl EpollHandler for BlockEpollHandler {
         device_event: DeviceEventT,
         _: u32,
         payload: EpollHandlerPayload,
+        _: epoll::Events,
     ) -> result::Result<(), DeviceError> {
         match device_event {
             QUEUE_AVAIL_EVENT => {

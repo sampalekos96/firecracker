@@ -171,7 +171,6 @@ fn main() {
         memory_to_load: None,
         diff_dirs: Vec::new(),
         dump_dir: None,
-        cid: 124,
         copy_base: false,
         copy_diff: false,
         huge_page: false,

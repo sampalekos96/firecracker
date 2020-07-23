@@ -513,6 +513,7 @@ impl EpollHandler for NetEpollHandler {
         device_event: DeviceEventT,
         _: u32,
         payload: EpollHandlerPayload,
+        _: epoll::Events,
     ) -> result::Result<(), DeviceError> {
         match device_event {
             RX_QUEUE_EVENT => {

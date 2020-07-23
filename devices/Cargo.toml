@@ -17,6 +17,7 @@ net_gen = { path = "../net_gen" }
 rate_limiter = { path = "../rate_limiter" }
 sys_util = { path = "../sys_util" }
 virtio_gen = { path = "../virtio_gen" }
+fc_util = { path = "../fc_util" }
 vhost_gen = { path = "../vhost_gen" , optional = true}
 vhost_backend = { path = "../vhost_backend", optional = true}
 

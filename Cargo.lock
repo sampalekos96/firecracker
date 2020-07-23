@@ -188,6 +188,7 @@ dependencies = [
  "byteorder 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "dumbo 0.1.0",
  "epoll 4.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fc_util 0.1.0",
  "libc 0.2.47 (registry+https://github.com/rust-lang/crates.io-index)",
  "logger 0.1.0",
  "memory_model 0.1.0",

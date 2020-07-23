@@ -812,33 +812,33 @@ impl GuestMemory {
         })
     }
 
-    /// Converts a GuestAddress into a pointer in the address space of this
-    /// process. This should only be necessary for giving addresses to the
-    /// kernel, as with vhost ioctls. Normal reads/writes to guest memory should
-    /// be done through `write_from_memory`, `read_obj_from_addr`, etc.
-    ///
-    /// # Arguments
-    /// * `guest_addr` - Guest address to convert.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use memory_model::{GuestAddress, GuestMemory};
-    /// # fn test_host_addr() -> Result<(), ()> {
-    ///     let start_addr = GuestAddress(0x1000);
-    ///     let mut gm = GuestMemory::new(&vec![(start_addr, 0x500)]).map_err(|_| ())?;
-    ///     let addr = gm.get_host_address(GuestAddress(0x1200)).unwrap();
-    ///     println!("Host address is {:p}", addr);
-    ///     Ok(())
-    /// # }
-    /// ```
-    pub fn get_host_address(&self, guest_addr: GuestAddress) -> Result<*const u8> {
-        self.do_in_region(guest_addr, 1, |mapping, offset| {
-            // This is safe; `do_in_region` already checks that offset is in
-            // bounds.
-            Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
-        })
-    }
+    ///// Converts a GuestAddress into a pointer in the address space of this
+    ///// process. This should only be necessary for giving addresses to the
+    ///// kernel, as with vhost ioctls. Normal reads/writes to guest memory should
+    ///// be done through `write_from_memory`, `read_obj_from_addr`, etc.
+    /////
+    ///// # Arguments
+    ///// * `guest_addr` - Guest address to convert.
+    /////
+    ///// # Examples
+    /////
+    ///// ```
+    ///// # use memory_model::{GuestAddress, GuestMemory};
+    ///// # fn test_host_addr() -> Result<(), ()> {
+    /////     let start_addr = GuestAddress(0x1000);
+    /////     let mut gm = GuestMemory::new(&vec![(start_addr, 0x500)]).map_err(|_| ())?;
+    /////     let addr = gm.get_host_address(GuestAddress(0x1200)).unwrap();
+    /////     println!("Host address is {:p}", addr);
+    /////     Ok(())
+    ///// # }
+    ///// ```
+    //pub fn get_host_address(&self, guest_addr: GuestAddress) -> Result<*const u8> {
+    //    self.do_in_region(guest_addr, 1, |mapping, offset| {
+    //        // This is safe; `do_in_region` already checks that offset is in
+    //        // bounds.
+    //        Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
+    //    })
+    //}
 
     /// Only used by vhost-vsock snapshotting
     pub fn get_guest_address(&self, host_addr: u64) -> Result<GuestAddress> {
@@ -898,7 +898,7 @@ impl GuestMemory {
     }
 
     /// Read the whole object from a single MemoryRegion
-    fn do_in_region<F, T>(&self, guest_addr: GuestAddress, size: usize, cb: F) -> Result<T>
+    pub fn do_in_region<F, T>(&self, guest_addr: GuestAddress, size: usize, cb: F) -> Result<T>
     where
         F: FnOnce(&MemoryMapping, usize) -> Result<T>,
     {

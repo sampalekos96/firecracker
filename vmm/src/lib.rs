@@ -88,7 +88,6 @@ use vmm_config::net::{
     NetworkInterfaceConfig, NetworkInterfaceConfigs, NetworkInterfaceError,
     NetworkInterfaceUpdateConfig,
 };
-#[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
 use vstate::{Vcpu, Vm, VcpuInfo};
 pub use vstate::Snapshot;
@@ -565,11 +564,10 @@ impl EpollContext {
         )
     }
 
-    #[cfg(feature = "vsock")]
-    fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vhost::handle::VhostEpollConfig {
+    fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vsock::EpollConfig {
         let (dispatch_base, sender) =
-            self.allocate_tokens(virtio::vhost::handle::VHOST_EVENTS_COUNT);
-        virtio::vhost::handle::VhostEpollConfig::new(dispatch_base, self.epoll_raw_fd, sender)
+            self.allocate_tokens(virtio::vsock::VSOCK_EVENTS_COUNT);
+        virtio::vsock::EpollConfig::new(dispatch_base, self.epoll_raw_fd, sender)
     }
 
     fn get_device_handler(&mut self, device_idx: usize) -> Result<&mut EpollHandler> {
@@ -631,7 +629,6 @@ struct Vmm {
     // This is necessary because we want the root to always be mounted on /dev/vda.
     block_device_configs: BlockDeviceConfigs,
     network_interface_configs: NetworkInterfaceConfigs,
-    #[cfg(feature = "vsock")]
     vsock_device_configs: VsockDeviceConfigs,
 
     epoll_context: EpollContext,
@@ -723,7 +720,6 @@ impl Vmm {
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
             network_interface_configs: NetworkInterfaceConfigs::new(),
-            #[cfg(feature = "vsock")]
             vsock_device_configs: VsockDeviceConfigs::new(),
             epoll_context,
             api_event,
@@ -759,6 +755,7 @@ impl Vmm {
                         virtio::block::FS_UPDATE_EVENT,
                         *device_idx as u32,
                         EpollHandlerPayload::DrivePayload(disk_image),
+                        epoll::Events::empty(),
                     ) {
                         Err(devices::Error::PayloadExpected) => {
                             panic!("Received update disk image event with empty payload.")
@@ -1020,17 +1017,21 @@ impl Vmm {
         Ok(())
     }
 
-    #[cfg(feature = "vsock")]
     fn attach_vsock_devices_snapshot(
         &mut self,
         device_manager: &mut MMIODeviceManager,
-        guest_mem: &GuestMemory,
     ) -> std::result::Result<(), StartMicrovmError> {
         for cfg in self.vsock_device_configs.iter() {
+            let backend = devices::virtio::vsock::VsockUnixBackend::new(
+                u64::from(cfg.guest_cid),
+                cfg.uds_path.clone(),
+            )
+            .map_err(StartMicrovmError::CreateVsockBackend)?;
+
             let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
 
             let vsock_box = Box::new(
-                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -1038,29 +1039,34 @@ impl Vmm {
                     self.vm.get_fd(),
                     vsock_box,
                     None,
-                    None,
+                    Some(cfg.vsock_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
         Ok(())
     }
 
-    #[cfg(feature = "vsock")]
-    fn attach_vsock_devices(
-        &mut self,
-        device_manager: &mut MMIODeviceManager,
-        guest_mem: &GuestMemory,
-    ) -> std::result::Result<(), StartMicrovmError> {
+    fn attach_vsock_devices(&mut self) -> std::result::Result<(), StartMicrovmError> {
         let kernel_config = self
             .kernel_config
             .as_mut()
             .ok_or(StartMicrovmError::MissingKernelConfig)?;
 
-        for cfg in self.vsock_device_configs.iter() {
-            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+        // `unwrap` is suitable for this context since this should be called only after the
+        // device manager has been initialized.
+        let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
+        for cfg in self.vsock_device_configs.iter() {
+        //if let Some(cfg) = &self.vsock_device_configs {
+            let backend = devices::virtio::vsock::VsockUnixBackend::new(
+                u64::from(cfg.guest_cid),
+                cfg.uds_path.clone(),
+            )
+            .map_err(StartMicrovmError::CreateVsockBackend)?;
+
+            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
             let vsock_box = Box::new(
-                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -1068,12 +1074,41 @@ impl Vmm {
                     self.vm.get_fd(),
                     vsock_box,
                     Some(&mut kernel_config.cmdline),
-                    None,
+                    Some(cfg.vsock_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
+
         Ok(())
     }
+    //fn attach_vsock_devices(
+    //    &mut self,
+    //    device_manager: &mut MMIODeviceManager,
+    //    guest_mem: &GuestMemory,
+    //) -> std::result::Result<(), StartMicrovmError> {
+    //    let kernel_config = self
+    //        .kernel_config
+    //        .as_mut()
+    //        .ok_or(StartMicrovmError::MissingKernelConfig)?;
+
+    //    for cfg in self.vsock_device_configs.iter() {
+    //        let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+
+    //        let vsock_box = Box::new(
+    //            devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+    //                .map_err(StartMicrovmError::CreateVsockDevice)?,
+    //        );
+    //        device_manager
+    //            .register_device(
+    //                self.vm.get_fd(),
+    //                vsock_box,
+    //                Some(&mut kernel_config.cmdline),
+    //                None,
+    //            )
+    //            .map_err(StartMicrovmError::RegisterVsockDevice)?;
+    //    }
+    //    Ok(())
+    //}
 
     fn configure_kernel(&mut self, kernel_config: KernelConfig) {
         self.kernel_config = Some(kernel_config);
@@ -1747,6 +1782,14 @@ impl Vmm {
 
             for event in events.iter().take(num_events) {
                 let dispatch_idx = event.data as usize;
+                let evset = match epoll::Events::from_bits(event.events) {
+                    Some(evset) => evset,
+                    None => {
+                        let evbits = event.events;
+                        warn!("epoll: ignoring unknown event set: 0x{:x}", evbits);
+                        continue;
+                    },
+                };
 
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
@@ -1793,6 +1836,7 @@ impl Vmm {
                                         device_token,
                                         event.events,
                                         EpollHandlerPayload::Empty,
+                                        evset,
                                     ) {
                                         Err(devices::Error::PayloadExpected) => panic!(
                                             "Received update disk image event with empty payload."
@@ -2124,6 +2168,7 @@ impl Vmm {
                         .map(|rl| rl.ops.map(|b| b.into_token_bucket()))
                         .unwrap_or(None),
                 },
+                epoll::Events::empty(),
             )
             .map_err(|e| {
                 VmmActionError::NetworkConfig(
