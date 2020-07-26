@@ -13,6 +13,7 @@ pub mod block;
 mod mmio;
 pub mod net;
 pub mod queue;
+#[cfg(feature = "vsock")]
 pub mod vsock;
 
 pub use self::block::*;
@@ -48,8 +49,6 @@ pub const NOTIFY_REG_OFFSET: u32 = 0x50;
 pub enum ActivateError {
     EpollCtl(IOError),
     BadActivate,
-    #[cfg(feature = "vsock")]
-    BadVhostActivate(self::vhost::Error),
 }
 
 pub type ActivateResult = std::result::Result<(), ActivateError>;

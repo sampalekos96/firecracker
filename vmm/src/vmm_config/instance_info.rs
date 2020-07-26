@@ -62,8 +62,10 @@ pub enum StartMicrovmError {
     CreateNetDevice(devices::virtio::Error),
     /// Failed to create a `RateLimiter` object.
     CreateRateLimiter(std::io::Error),
+    #[cfg(feature = "vsock")]
     /// Failed to create the backend for the vsock device.
     CreateVsockBackend(devices::virtio::vsock::VsockUnixBackendError),
+    #[cfg(feature = "vsock")]
     /// Failed to create the vsock device.
     CreateVsockDevice(devices::virtio::vsock::VsockError),
     /// The device manager was not configured.
@@ -144,12 +146,14 @@ impl Display for StartMicrovmError {
 
                 write!(f, "Cannot create network device. {}", err_msg)
             }
+            #[cfg(feature = "vsock")]
             CreateVsockBackend(ref err) => {
                 let mut err_msg = format!("{:?}", err);
                 err_msg = err_msg.replace("\"", "");
 
                 write!(f, "Cannot create vsock backend. {}", err_msg)
             }
+            #[cfg(feature = "vsock")]
             CreateVsockDevice(ref err) => {
                 let mut err_msg = format!("{:?}", err);
                 err_msg = err_msg.replace("\"", "");

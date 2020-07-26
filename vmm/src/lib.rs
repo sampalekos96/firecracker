@@ -88,6 +88,7 @@ use vmm_config::net::{
     NetworkInterfaceConfig, NetworkInterfaceConfigs, NetworkInterfaceError,
     NetworkInterfaceUpdateConfig,
 };
+#[cfg(feature = "vsock")]
 use vmm_config::vsock::{VsockDeviceConfig, VsockDeviceConfigs, VsockError};
 use vstate::{Vcpu, Vm, VcpuInfo};
 pub use vstate::Snapshot;
@@ -564,6 +565,7 @@ impl EpollContext {
         )
     }
 
+    #[cfg(feature = "vsock")]
     fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vsock::EpollConfig {
         let (dispatch_base, sender) =
             self.allocate_tokens(virtio::vsock::VSOCK_EVENTS_COUNT);
@@ -629,6 +631,7 @@ struct Vmm {
     // This is necessary because we want the root to always be mounted on /dev/vda.
     block_device_configs: BlockDeviceConfigs,
     network_interface_configs: NetworkInterfaceConfigs,
+    #[cfg(feature = "vsock")]
     vsock_device_configs: VsockDeviceConfigs,
 
     epoll_context: EpollContext,
@@ -720,6 +723,7 @@ impl Vmm {
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
             network_interface_configs: NetworkInterfaceConfigs::new(),
+            #[cfg(feature = "vsock")]
             vsock_device_configs: VsockDeviceConfigs::new(),
             epoll_context,
             api_event,
@@ -1017,6 +1021,7 @@ impl Vmm {
         Ok(())
     }
 
+    #[cfg(feature = "vsock")]
     fn attach_vsock_devices_snapshot(
         &mut self,
         device_manager: &mut MMIODeviceManager,
@@ -1046,15 +1051,15 @@ impl Vmm {
         Ok(())
     }
 
-    fn attach_vsock_devices(&mut self) -> std::result::Result<(), StartMicrovmError> {
+    #[cfg(feature = "vsock")]
+    fn attach_vsock_devices(
+        &mut self,
+        device_manager: &mut MMIODeviceManager,
+    ) -> std::result::Result<(), StartMicrovmError> {
         let kernel_config = self
             .kernel_config
             .as_mut()
             .ok_or(StartMicrovmError::MissingKernelConfig)?;
-
-        // `unwrap` is suitable for this context since this should be called only after the
-        // device manager has been initialized.
-        let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
         for cfg in self.vsock_device_configs.iter() {
         //if let Some(cfg) = &self.vsock_device_configs {
@@ -1211,12 +1216,12 @@ impl Vmm {
             self.attach_block_devices_snapshot(&mut device_manager)?;
             self.attach_net_devices_snapshot(&mut device_manager)?;
             #[cfg(feature = "vsock")]
-            self.attach_vsock_devices_snapshot(&mut device_manager, &guest_mem)?;
+            self.attach_vsock_devices_snapshot(&mut device_manager)?;
         } else {
             self.attach_block_devices(&mut device_manager)?;
             self.attach_net_devices(&mut device_manager)?;
             #[cfg(feature = "vsock")]
-            self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+            self.attach_vsock_devices(&mut device_manager)?;
         }
 
         self.mmio_device_manager = Some(device_manager);
