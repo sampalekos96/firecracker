@@ -103,7 +103,7 @@ pub use vstate::Snapshot;
 /// - `i8042.nomux` do not probe i8042 for a multiplexing controller (save boot time);
 /// - `i8042.nopnp` do not use ACPIPnP to discover KBD/AUX controllers (save boot time);
 /// - `i8042.dumbkbd` do not attempt to control kbd state via the i8042 (save boot time).
-const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0 \
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0 \
                                       i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd";
 const WRITE_METRICS_PERIOD_SECONDS: u64 = 60;
 
