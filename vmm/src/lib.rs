@@ -1576,34 +1576,16 @@ impl Vmm {
         LittleEndian::write_u32(data.as_mut(), 11);
         bus.write(base+0x70, &data);
 
-        let queues =
-            &self.snap_to_load.as_ref().unwrap().vsock_state.queues;
-        for idx in 0..2usize {
+        for idx in 0..=2usize {
             LittleEndian::write_u32(data.as_mut(), idx as u32);
             bus.write(base+0x30, &data);
             // states checked by device activation operation
             // queue size, queue location, queue ready
             LittleEndian::write_u32(data.as_mut(), 256);
             bus.write(base+0x38, &data);
-            LittleEndian::write_u32(data.as_mut(), queues[idx].desc_table.offset() as u32);
-            bus.write(base+0x80, &data);
-            bus.write(base+0x84, &zero);
-            LittleEndian::write_u32(data.as_mut(), queues[idx].avail_ring.offset() as u32);
-            bus.write(base+0x90, &data);
-            bus.write(base+0x94, &zero);
-            LittleEndian::write_u32(data.as_mut(), queues[idx].used_ring.offset() as u32);
-            bus.write(base+0xa0, &data);
-            bus.write(base+0xa4, &zero);
-
             LittleEndian::write_u32(data.as_mut(), 1);
             bus.write(base+0x44, &data);
         }
-        LittleEndian::write_u32(data.as_mut(), 2);
-        bus.write(base+0x30, &data);
-        LittleEndian::write_u32(data.as_mut(), 256);
-        bus.write(base+0x38, &data);
-        LittleEndian::write_u32(data.as_mut(), 1);
-        bus.write(base+0x44, &data);
 
         // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
         // Activation requires all queues in a valid state:
@@ -1613,11 +1595,14 @@ impl Vmm {
         //     4. alignment constraints must be satisfied
         LittleEndian::write_u32(data.as_mut(), 15);
         bus.write(base+0x70, &data);
+
+        let queues = &self.snap_to_load.as_ref().unwrap().vsock_state.queues;
+        self.epoll_context.get_device_handler(mmio_offset).unwrap().set_queues(&queues);
     }
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
-        let t00 = now_monotime_us();
+        //let t00 = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::StartMicrovm(
                 ErrorKind::User,
@@ -1642,7 +1627,7 @@ impl Vmm {
         self.init_guest_memory()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        let t0 = now_monotime_us();
+        //let t0 = now_monotime_us();
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
@@ -1671,15 +1656,12 @@ impl Vmm {
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t1 = now_monotime_us();
-
-        //self.epoll_context.disable_stdin_event();
-
+        //let t1 = now_monotime_us();
 
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t2 = now_monotime_us();
+        //let t2 = now_monotime_us();
 
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
@@ -1693,7 +1675,7 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t3 = now_monotime_us();
+        //let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement
         //eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.

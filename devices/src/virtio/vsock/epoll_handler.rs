@@ -139,11 +139,14 @@ impl<B> EpollHandler for VsockEpollHandler<B>
 where
     B: VsockBackend,
 {
-    fn set_queues(&mut self, _: &Vec<super::super::Queue>) {
+    fn set_queues(&mut self, other: &Vec<super::super::Queue>) {
+        self.rxvq = other[0].clone();
+        self.txvq = other[1].clone();
+        self.evvq = other[2].clone();
     }
 
     fn get_queues(&self) -> Vec<super::super::Queue> {
-        Vec::new()
+        vec![self.rxvq.clone(), self.txvq.clone(), self.evvq.clone()]
     }
 
     /// Respond to a new event, coming from the main epoll loop (implemented by the VMM).
