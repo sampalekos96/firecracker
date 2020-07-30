@@ -257,8 +257,6 @@ pub struct SnapFaaSConfig {
     pub load_dir: Option<PathBuf>,
     /// parsed snapshot.json
     pub parsed_json: Option<Snapshot>,
-    /// memory to load
-    pub memory_to_load: Option<File>,
     /// directory to dump to
     pub dump_dir: Option<PathBuf>,
     /// restore base memory by copying
@@ -352,12 +350,6 @@ pub struct TimestampUs {
     pub cputime_us: u64,
 }
 
-#[inline]
-/// Gets the wallclock timestamp as microseconds.
-fn get_time_us() -> u64 {
-    (chrono::Utc::now().timestamp_nanos() / 1000) as u64
-}
-
 /// Describes a KVM context that gets attached to the micro vm instance.
 /// It gives access to the functionality of the KVM wrapper as long as every required
 /// KVM capability is present on the host.
@@ -420,12 +412,12 @@ enum EpollDispatch {
 }
 
 struct MaybeHandler {
-    handler: Option<Box<EpollHandler>>,
-    receiver: Receiver<Box<EpollHandler>>,
+    handler: Option<Box<dyn EpollHandler>>,
+    receiver: Receiver<Box<dyn EpollHandler>>,
 }
 
 impl MaybeHandler {
-    fn new(receiver: Receiver<Box<EpollHandler>>) -> Self {
+    fn new(receiver: Receiver<Box<dyn EpollHandler>>) -> Self {
         MaybeHandler {
             handler: None,
             receiver,
@@ -524,7 +516,7 @@ impl EpollContext {
         Ok(EpollEvent { fd })
     }
 
-    fn allocate_tokens(&mut self, count: usize) -> (u64, Sender<Box<EpollHandler>>) {
+    fn allocate_tokens(&mut self, count: usize) -> (u64, Sender<Box<dyn EpollHandler>>) {
         let dispatch_base = self.dispatch_table.len() as u64;
         let device_idx = self.device_handlers.len();
         let (sender, receiver) = channel();
@@ -572,7 +564,7 @@ impl EpollContext {
         virtio::vsock::EpollConfig::new(dispatch_base, self.epoll_raw_fd, sender)
     }
 
-    fn get_device_handler(&mut self, device_idx: usize) -> Result<&mut EpollHandler> {
+    fn get_device_handler(&mut self, device_idx: usize) -> Result<&mut dyn EpollHandler> {
         let maybe = &mut self.device_handlers[device_idx];
         match maybe.handler {
             Some(ref mut v) => Ok(v.as_mut()),
@@ -661,7 +653,6 @@ struct Vmm {
 
     // restore memory by copying
     copy_base: bool,
-    memory_to_load: Option<File>,
     huge_page: bool,
     diff_dirs: Vec<PathBuf>,
     copy_diff: bool,
@@ -740,7 +731,6 @@ impl Vmm {
             snap_sender,
             snap_evt,
             copy_base: snapfaas_config.copy_base,
-            memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
             diff_dirs: snapfaas_config.diff_dirs,
             copy_diff: snapfaas_config.copy_diff,
@@ -1764,7 +1754,7 @@ impl Vmm {
         let mut exit_on_dump = false;
         let mut vcpu_snap_cnt = 0usize;
         // TODO: try handling of errors/failures without breaking this main loop.
-        'poll: loop {
+        loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
 
             for event in events.iter().take(num_events) {

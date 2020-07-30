@@ -7,7 +7,7 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
-use std::io::{Read, Write, Seek, SeekFrom, BufRead, BufReader};
+use std::io::{Read, Write, BufRead, BufReader};
 use std::fs::{OpenOptions, File};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -663,7 +663,7 @@ impl GuestMemory {
     /// ```
     pub fn read_slice_at_addr(
         &self,
-        mut buf: &mut [u8],
+        buf: &mut [u8],
         guest_addr: GuestAddress,
     ) -> Result<usize> {
         self.do_in_region_partial(guest_addr, move |mapping, offset| {

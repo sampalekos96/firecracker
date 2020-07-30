@@ -17,7 +17,7 @@
 use std::result;
 
 use fc_util::byte_order;
-use memory_model::{self, GuestAddress, GuestMemoryError, GuestMemory};
+use memory_model::{GuestAddress, GuestMemoryError, GuestMemory};
 
 use super::super::DescriptorChain;
 use super::defs;

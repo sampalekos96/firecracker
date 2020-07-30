@@ -637,14 +637,14 @@ pub struct EpollConfig {
     rx_rate_limiter_token: u64,
     tx_rate_limiter_token: u64,
     epoll_raw_fd: RawFd,
-    sender: mpsc::Sender<Box<EpollHandler>>,
+    sender: mpsc::Sender<Box<dyn EpollHandler>>,
 }
 
 impl EpollConfig {
     pub fn new(
         first_token: u64,
         epoll_raw_fd: RawFd,
-        sender: mpsc::Sender<Box<EpollHandler>>,
+        sender: mpsc::Sender<Box<dyn EpollHandler>>,
     ) -> Self {
         EpollConfig {
             rx_tap_token: first_token + u64::from(RX_TAP_EVENT),
@@ -851,7 +851,7 @@ impl VirtioDevice for Net {
             let tx_queue = queues.remove(0);
             let rx_queue_evt = queue_evts.remove(0);
             let tx_queue_evt = queue_evts.remove(0);
-            let mut mmds_ns = if self.allow_mmds_requests {
+            let mmds_ns = if self.allow_mmds_requests {
                 Some(MmdsNetworkStack::new_with_defaults())
             } else {
                 None
@@ -1000,7 +1000,7 @@ mod tests {
     struct DummyNet {
         net: Net,
         epoll_raw_fd: i32,
-        _receiver: Receiver<Box<EpollHandler>>,
+        _receiver: Receiver<Box<dyn EpollHandler>>,
     }
 
     impl DummyNet {

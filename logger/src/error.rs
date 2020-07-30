@@ -4,7 +4,6 @@
 //! Enumeration of errors returned by the logger.
 
 use std;
-use std::error::Error;
 use std::fmt;
 
 /// Describes the errors which may occur while handling logging scenarios.
@@ -51,13 +50,13 @@ impl fmt::Display for LoggerError {
             }
             LoggerError::InvalidLogOption(ref s) => format!("Invalid log option: {}", s),
             LoggerError::OpenFIFO(ref e) => {
-                format!("Failed to open pipe. Error: {}", e.description())
+                format!("Failed to open pipe. Error: {}", e.to_string())
             }
             LoggerError::LogWrite(ref e) => {
-                format!("Failed to write logs. Error: {}", e.description())
+                format!("Failed to write logs. Error: {}", e.to_string())
             }
             LoggerError::LogFlush(ref e) => {
-                format!("Failed to flush logs. Error: {}", e.description())
+                format!("Failed to flush logs. Error: {}", e.to_string())
             }
             LoggerError::MutexLockFailure(ref e) => e.to_string(),
             LoggerError::LogMetricFailure(ref e) => e.to_string(),

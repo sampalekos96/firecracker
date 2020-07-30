@@ -153,13 +153,6 @@ impl Display for StartMicrovmError {
 
                 write!(f, "Cannot create vsock backend. {}", err_msg)
             }
-            #[cfg(feature = "vsock")]
-            CreateVsockDevice(ref err) => {
-                let mut err_msg = format!("{:?}", err);
-                err_msg = err_msg.replace("\"", "");
-
-                write!(f, "Cannot create vsock device. {}", err_msg)
-            }
             DeviceManager => write!(f, "The device manager was not configured."),
             EventFd => write!(f, "Cannot read from an Event file descriptor."),
             GuestMemory(ref err) => {

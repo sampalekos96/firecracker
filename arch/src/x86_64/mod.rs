@@ -47,8 +47,8 @@ impl From<Error> for super::Error {
 
 // Where BIOS/VGA magic would live on a real PC.
 const EBDA_START: u64 = 0x9fc00;
-const FIRST_ADDR_PAST_32BITS: usize = (1 << 32);
-const MEM_32BIT_GAP_SIZE: usize = (768 << 20);
+const FIRST_ADDR_PAST_32BITS: usize = 1 << 32;
+const MEM_32BIT_GAP_SIZE: usize = 768 << 20;
 
 /// Returns a Vec of the valid memory addresses.
 /// These should be used to configure the GuestMemory structure for the platform.

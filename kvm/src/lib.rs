@@ -287,7 +287,7 @@ impl KvmRunWrapper {
     /// # Arguments
     /// * `fd` - File descriptor to mmap from.
     /// * `size` - Size of memory region in bytes.
-    pub fn from_fd(fd: &AsRawFd, size: usize) -> Result<KvmRunWrapper> {
+    pub fn from_fd(fd: &dyn AsRawFd, size: usize) -> Result<KvmRunWrapper> {
         // This is safe because we are creating a mapping in a place not already used by any other
         // area in this process.
         let addr = unsafe {
@@ -926,7 +926,7 @@ impl VcpuFd {
     /// * `msrs`  - MSRs to be read.
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
+    pub fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<i32> {
         let ret = unsafe {
             // Here we trust the kernel not to read past the end of the kvm_msrs struct.
             ioctl_with_mut_ref(self, KVM_GET_MSRS(), msrs)
