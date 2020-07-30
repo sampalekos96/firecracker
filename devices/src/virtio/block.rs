@@ -403,11 +403,12 @@ impl EpollHandler for BlockEpollHandler {
         device_event: DeviceEventT,
         _: u32,
         payload: EpollHandlerPayload,
+        _: epoll::Events,
     ) -> result::Result<(), DeviceError> {
         match device_event {
             QUEUE_AVAIL_EVENT => {
                 METRICS.block.queue_event_count.inc();
-                if let Err(e) = self.queue_evt.read() {
+                if let Err(_) = self.queue_evt.read() {
                     let e = io::Error::last_os_error();
                     error!("Failed to get queue event: {:?}", e);
                     METRICS.block.event_fails.inc();
@@ -451,14 +452,14 @@ pub struct EpollConfig {
     q_avail_token: u64,
     rate_limiter_token: u64,
     epoll_raw_fd: RawFd,
-    sender: mpsc::Sender<Box<EpollHandler>>,
+    sender: mpsc::Sender<Box<dyn EpollHandler>>,
 }
 
 impl EpollConfig {
     pub fn new(
         first_token: u64,
         epoll_raw_fd: RawFd,
-        sender: mpsc::Sender<Box<EpollHandler>>,
+        sender: mpsc::Sender<Box<dyn EpollHandler>>,
     ) -> Self {
         EpollConfig {
             q_avail_token: first_token + u64::from(QUEUE_AVAIL_EVENT),

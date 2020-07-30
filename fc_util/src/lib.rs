@@ -4,6 +4,7 @@
 extern crate libc;
 
 pub mod validators;
+pub mod byte_order;
 
 pub fn timestamp_cycles() -> u64 {
     #[cfg(target_arch = "x86_64")]

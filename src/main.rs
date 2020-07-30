@@ -168,13 +168,8 @@ fn main() {
     let snapfaas_config = vmm::SnapFaaSConfig {
         load_dir: None,
         parsed_json: None,
-        memory_to_load: None,
         diff_dirs: Vec::new(),
         dump_dir: None,
-        ready_notifier: None,
-        notifier_id: 0,
-        second_serial: None,
-        second_input: None,
         copy_base: false,
         copy_diff: false,
         huge_page: false,

@@ -92,7 +92,7 @@ impl MMIODeviceManager {
     pub fn register_device(
         &mut self,
         vm: &VmFd,
-        device: Box<devices::virtio::VirtioDevice>,
+        device: Box<dyn devices::virtio::VirtioDevice>,
         cmdline: Option<&mut kernel_cmdline::Cmdline>,
         id: Option<String>,
     ) -> Result<u64> {

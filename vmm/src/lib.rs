@@ -53,7 +53,6 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::{BufReader, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::result;
@@ -104,7 +103,7 @@ pub use vstate::Snapshot;
 /// - `i8042.nomux` do not probe i8042 for a multiplexing controller (save boot time);
 /// - `i8042.nopnp` do not use ACPIPnP to discover KBD/AUX controllers (save boot time);
 /// - `i8042.dumbkbd` do not attempt to control kbd state via the i8042 (save boot time).
-const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0 \
+pub const DEFAULT_KERNEL_CMDLINE: &str = "reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0 \
                                       i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd";
 const WRITE_METRICS_PERIOD_SECONDS: u64 = 60;
 
@@ -258,18 +257,8 @@ pub struct SnapFaaSConfig {
     pub load_dir: Option<PathBuf>,
     /// parsed snapshot.json
     pub parsed_json: Option<Snapshot>,
-    /// memory to load
-    pub memory_to_load: Option<File>,
     /// directory to dump to
     pub dump_dir: Option<PathBuf>,
-    /// notifier to send ready signal
-    pub ready_notifier: Option<File>,
-    /// id of this instance
-    pub notifier_id: u32,
-    /// second serial output
-    pub second_serial: Option<File>,
-    /// second serial input
-    pub second_input: Option<File>,
     /// restore base memory by copying
     pub copy_base: bool,
     /// restore diff memory by copying
@@ -361,12 +350,6 @@ pub struct TimestampUs {
     pub cputime_us: u64,
 }
 
-#[inline]
-/// Gets the wallclock timestamp as microseconds.
-fn get_time_us() -> u64 {
-    (chrono::Utc::now().timestamp_nanos() / 1000) as u64
-}
-
 /// Describes a KVM context that gets attached to the micro vm instance.
 /// It gives access to the functionality of the KVM wrapper as long as every required
 /// KVM capability is present on the host.
@@ -422,7 +405,6 @@ impl KvmContext {
 enum EpollDispatch {
     Exit,
     Stdin,
-    SecondInput,
     DeviceHandler(usize, DeviceEventT),
     VmmActionRequest,
     WriteMetrics,
@@ -430,12 +412,12 @@ enum EpollDispatch {
 }
 
 struct MaybeHandler {
-    handler: Option<Box<EpollHandler>>,
-    receiver: Receiver<Box<EpollHandler>>,
+    handler: Option<Box<dyn EpollHandler>>,
+    receiver: Receiver<Box<dyn EpollHandler>>,
 }
 
 impl MaybeHandler {
-    fn new(receiver: Receiver<Box<EpollHandler>>) -> Self {
+    fn new(receiver: Receiver<Box<dyn EpollHandler>>) -> Self {
         MaybeHandler {
             handler: None,
             receiver,
@@ -534,7 +516,7 @@ impl EpollContext {
         Ok(EpollEvent { fd })
     }
 
-    fn allocate_tokens(&mut self, count: usize) -> (u64, Sender<Box<EpollHandler>>) {
+    fn allocate_tokens(&mut self, count: usize) -> (u64, Sender<Box<dyn EpollHandler>>) {
         let dispatch_base = self.dispatch_table.len() as u64;
         let device_idx = self.device_handlers.len();
         let (sender, receiver) = channel();
@@ -576,13 +558,13 @@ impl EpollContext {
     }
 
     #[cfg(feature = "vsock")]
-    fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vhost::handle::VhostEpollConfig {
+    fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vsock::EpollConfig {
         let (dispatch_base, sender) =
-            self.allocate_tokens(virtio::vhost::handle::VHOST_EVENTS_COUNT);
-        virtio::vhost::handle::VhostEpollConfig::new(dispatch_base, self.epoll_raw_fd, sender)
+            self.allocate_tokens(virtio::vsock::VSOCK_EVENTS_COUNT);
+        virtio::vsock::EpollConfig::new(dispatch_base, self.epoll_raw_fd, sender)
     }
 
-    fn get_device_handler(&mut self, device_idx: usize) -> Result<&mut EpollHandler> {
+    fn get_device_handler(&mut self, device_idx: usize) -> Result<&mut dyn EpollHandler> {
         let maybe = &mut self.device_handlers[device_idx];
         match maybe.handler {
             Some(ref mut v) => Ok(v.as_mut()),
@@ -669,13 +651,8 @@ struct Vmm {
     snap_sender: Option<Sender<VcpuInfo>>,
     snap_evt: EventFd,
 
-    // added to notify Firerunner we've booted up
-    ready_notifier: Option<File>,
-    notifier_id: u32,
-
     // restore memory by copying
     copy_base: bool,
-    memory_to_load: Option<File>,
     huge_page: bool,
     diff_dirs: Vec<PathBuf>,
     copy_diff: bool,
@@ -722,17 +699,6 @@ impl Vmm {
         let snap_evt = evtfd.try_clone().expect("Cannot clone snap event fd");
         epoll_context.add_event(evtfd, EpollDispatch::Snap).expect("Cannot add snap event fd");
 
-        match snapfaas_config.second_input {
-            Some(ref input) => {
-                epoll_context
-                    .add_event(input.try_clone()
-                               .expect("Cannot clone file handler to second input"),
-                               EpollDispatch::SecondInput)
-                    .expect("Cannot add input pipe file discriptor to epoll.");
-            },
-            None => {}
-        }
-
         Ok(Vmm {
             kvm,
             vm_config: VmConfig::default(),
@@ -743,9 +709,7 @@ impl Vmm {
             exit_evt: None,
             vm,
             mmio_device_manager: None,
-            legacy_device_manager:
-                LegacyDeviceManager::new(snapfaas_config.second_serial, snapfaas_config.second_input)
-                .map_err(Error::CreateLegacyDevice)?,
+            legacy_device_manager: LegacyDeviceManager::new().map_err(Error::CreateLegacyDevice)?,
             block_device_configs,
             drive_handler_id_map: HashMap::new(),
             net_handler_id_map: HashMap::new(),
@@ -766,10 +730,7 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
-            ready_notifier: snapfaas_config.ready_notifier,
-            notifier_id: snapfaas_config.notifier_id,
             copy_base: snapfaas_config.copy_base,
-            memory_to_load: snapfaas_config.memory_to_load,
             huge_page: snapfaas_config.huge_page,
             diff_dirs: snapfaas_config.diff_dirs,
             copy_diff: snapfaas_config.copy_diff,
@@ -788,6 +749,7 @@ impl Vmm {
                         virtio::block::FS_UPDATE_EVENT,
                         *device_idx as u32,
                         EpollHandlerPayload::DrivePayload(disk_image),
+                        epoll::Events::empty(),
                     ) {
                         Err(devices::Error::PayloadExpected) => {
                             panic!("Received update disk image event with empty payload.")
@@ -1053,13 +1015,18 @@ impl Vmm {
     fn attach_vsock_devices_snapshot(
         &mut self,
         device_manager: &mut MMIODeviceManager,
-        guest_mem: &GuestMemory,
     ) -> std::result::Result<(), StartMicrovmError> {
         for cfg in self.vsock_device_configs.iter() {
+            let backend = devices::virtio::vsock::VsockUnixBackend::new(
+                u64::from(cfg.guest_cid),
+                cfg.uds_path.clone(),
+            )
+            .map_err(StartMicrovmError::CreateVsockBackend)?;
+
             let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
 
             let vsock_box = Box::new(
-                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -1067,7 +1034,7 @@ impl Vmm {
                     self.vm.get_fd(),
                     vsock_box,
                     None,
-                    None,
+                    Some(cfg.vsock_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
@@ -1078,7 +1045,6 @@ impl Vmm {
     fn attach_vsock_devices(
         &mut self,
         device_manager: &mut MMIODeviceManager,
-        guest_mem: &GuestMemory,
     ) -> std::result::Result<(), StartMicrovmError> {
         let kernel_config = self
             .kernel_config
@@ -1086,10 +1052,16 @@ impl Vmm {
             .ok_or(StartMicrovmError::MissingKernelConfig)?;
 
         for cfg in self.vsock_device_configs.iter() {
-            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+        //if let Some(cfg) = &self.vsock_device_configs {
+            let backend = devices::virtio::vsock::VsockUnixBackend::new(
+                u64::from(cfg.guest_cid),
+                cfg.uds_path.clone(),
+            )
+            .map_err(StartMicrovmError::CreateVsockBackend)?;
 
+            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
             let vsock_box = Box::new(
-                devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+                devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
                     .map_err(StartMicrovmError::CreateVsockDevice)?,
             );
             device_manager
@@ -1097,12 +1069,41 @@ impl Vmm {
                     self.vm.get_fd(),
                     vsock_box,
                     Some(&mut kernel_config.cmdline),
-                    None,
+                    Some(cfg.vsock_id.clone()),
                 )
                 .map_err(StartMicrovmError::RegisterVsockDevice)?;
         }
+
         Ok(())
     }
+    //fn attach_vsock_devices(
+    //    &mut self,
+    //    device_manager: &mut MMIODeviceManager,
+    //    guest_mem: &GuestMemory,
+    //) -> std::result::Result<(), StartMicrovmError> {
+    //    let kernel_config = self
+    //        .kernel_config
+    //        .as_mut()
+    //        .ok_or(StartMicrovmError::MissingKernelConfig)?;
+
+    //    for cfg in self.vsock_device_configs.iter() {
+    //        let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+
+    //        let vsock_box = Box::new(
+    //            devices::virtio::Vsock::new(u64::from(cfg.guest_cid), guest_mem, epoll_config)
+    //                .map_err(StartMicrovmError::CreateVsockDevice)?,
+    //        );
+    //        device_manager
+    //            .register_device(
+    //                self.vm.get_fd(),
+    //                vsock_box,
+    //                Some(&mut kernel_config.cmdline),
+    //                None,
+    //            )
+    //            .map_err(StartMicrovmError::RegisterVsockDevice)?;
+    //    }
+    //    Ok(())
+    //}
 
     fn configure_kernel(&mut self, kernel_config: KernelConfig) {
         self.kernel_config = Some(kernel_config);
@@ -1205,12 +1206,12 @@ impl Vmm {
             self.attach_block_devices_snapshot(&mut device_manager)?;
             self.attach_net_devices_snapshot(&mut device_manager)?;
             #[cfg(feature = "vsock")]
-            self.attach_vsock_devices_snapshot(&mut device_manager, &guest_mem)?;
+            self.attach_vsock_devices_snapshot(&mut device_manager)?;
         } else {
             self.attach_block_devices(&mut device_manager)?;
             self.attach_net_devices(&mut device_manager)?;
             #[cfg(feature = "vsock")]
-            self.attach_vsock_devices(&mut device_manager, &guest_mem)?;
+            self.attach_vsock_devices(&mut device_manager)?;
         }
 
         self.mmio_device_manager = Some(device_manager);
@@ -1317,13 +1318,8 @@ impl Vmm {
             let mut vcpu = vcpus.pop().unwrap();
 
             let seccomp_level = self.seccomp_level;
-            let from_snapshot = self.load_dir.is_some();
+            //let from_snapshot = self.load_dir.is_some();
             let sender = self.snap_sender.clone();
-            let ready_notifier = match self.ready_notifier {
-                Some(ref notifier) => Some(notifier.try_clone().expect("Failed to clone write")),
-                None => None,
-            };
-            let notifier_id = self.notifier_id;
             self.vcpus_handles.push(
                 thread::Builder::new()
                     .name(format!("fc_vcpu{}", cpu_id))
@@ -1334,9 +1330,8 @@ impl Vmm {
                                  vcpu_exit_evt,
                                  vcpu_snap_evt,
                                  sender,
-                                 from_snapshot,
-                                 ready_notifier,
-                                 notifier_id,);
+                                 //from_snapshot,
+                                 );
                     })
                     .map_err(StartMicrovmError::VcpuSpawn)?,
             );
@@ -1556,9 +1551,48 @@ impl Vmm {
             .unwrap().set_queues(&queues);
     }
 
+    fn restore_vsock(&mut self) {
+        let mmio_offset = self.drive_handler_id_map.len() + self.net_handler_id_map.len();
+        let base = 0xd000_0000u64 + 4096 * mmio_offset as u64;
+        let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
+        let mut data = [0u8; 4];
+        let zero = [0u8; 4];
+
+        bus.write(base+0x70, &zero);
+        LittleEndian::write_u32(data.as_mut(), 1);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 3);
+        bus.write(base+0x70, &data);
+        LittleEndian::write_u32(data.as_mut(), 11);
+        bus.write(base+0x70, &data);
+
+        for idx in 0..=2usize {
+            LittleEndian::write_u32(data.as_mut(), idx as u32);
+            bus.write(base+0x30, &data);
+            // states checked by device activation operation
+            // queue size, queue location, queue ready
+            LittleEndian::write_u32(data.as_mut(), 256);
+            bus.write(base+0x38, &data);
+            LittleEndian::write_u32(data.as_mut(), 1);
+            bus.write(base+0x44, &data);
+        }
+
+        // At this step, the mmio device is activated and EpollHandler is sent to the epoll_context
+        // Activation requires all queues in a valid state:
+        //     1. must be marked as ready
+        //     2. size must not be zero and cannot exceed max_size
+        //     3. descriptor table/available ring/used ring must completely reside in guest memory
+        //     4. alignment constraints must be satisfied
+        LittleEndian::write_u32(data.as_mut(), 15);
+        bus.write(base+0x70, &data);
+
+        let queues = &self.snap_to_load.as_ref().unwrap().vsock_state.queues;
+        self.epoll_context.get_device_handler(mmio_offset).unwrap().set_queues(&queues);
+    }
+
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
-        let t00 = now_monotime_us();
+        //let t00 = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::StartMicrovm(
                 ErrorKind::User,
@@ -1583,7 +1617,7 @@ impl Vmm {
         self.init_guest_memory()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        let t0 = now_monotime_us();
+        //let t0 = now_monotime_us();
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
@@ -1600,18 +1634,7 @@ impl Vmm {
             for i in 0..self.net_handler_id_map.len() {
                 self.restore_net_device(i as u64);
             }
-            let serial_state = devices::legacy::SerialState {
-                interrupt_enable: 5,
-                interrupt_identification: 1,
-                line_control: 19,
-                line_status: 96,
-                modem_control: 11,
-                modem_status: 176,
-                scratch: 0,
-                baud_divisor: 12,
-            };
-            self.legacy_device_manager.second_serial.as_mut().unwrap().lock().unwrap()
-                .set_serial_state(serial_state);
+            self.restore_vsock();
         } else {
             entry_addr = self
                 .load_kernel()
@@ -1623,15 +1646,12 @@ impl Vmm {
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t1 = now_monotime_us();
-
-        //self.epoll_context.disable_stdin_event();
-
+        //let t1 = now_monotime_us();
 
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t2 = now_monotime_us();
+        //let t2 = now_monotime_us();
 
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
@@ -1645,7 +1665,7 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-        let t3 = now_monotime_us();
+        //let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement
         //eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
         // Use expect() to crash if the other thread poisoned this lock.
@@ -1734,11 +1754,19 @@ impl Vmm {
         let mut exit_on_dump = false;
         let mut vcpu_snap_cnt = 0usize;
         // TODO: try handling of errors/failures without breaking this main loop.
-        'poll: loop {
+        loop {
             let num_events = epoll::wait(epoll_raw_fd, -1, &mut events[..]).map_err(Error::Poll)?;
 
             for event in events.iter().take(num_events) {
                 let dispatch_idx = event.data as usize;
+                let evset = match epoll::Events::from_bits(event.events) {
+                    Some(evset) => evset,
+                    None => {
+                        let evbits = event.events;
+                        warn!("epoll: ignoring unknown event set: 0x{:x}", evbits);
+                        continue;
+                    },
+                };
 
                 if let Some(dispatch_type) = self.epoll_context.dispatch_table[dispatch_idx] {
                     match dispatch_type {
@@ -1785,6 +1813,7 @@ impl Vmm {
                                         device_token,
                                         event.events,
                                         EpollHandlerPayload::Empty,
+                                        evset,
                                     ) {
                                         Err(devices::Error::PayloadExpected) => panic!(
                                             "Received update disk image event with empty payload."
@@ -1824,34 +1853,27 @@ impl Vmm {
                                 exit_on_dump = true;
                             }
                         }
-                        EpollDispatch::SecondInput => {
-                            let mut out = String::new();
-                            self.legacy_device_manager.second_input.as_mut().unwrap().read_line(&mut out)
-                                .expect("Failed to read from second input");
-                            assert_eq!(out.as_bytes().last().cloned().unwrap(), '\n' as u8);
-                            self.legacy_device_manager
-                                .second_serial
-                                .as_mut()
-                                .unwrap()
-                                .lock()
-                                .expect("Failed to process second input event due to poisoned lock")
-                                .queue_input_bytes(out.as_bytes())
-                                .map_err(Error::Serial)?;
-                        }
                     }
                 }
             }
             if exit_on_dump {
-                // dump block devices' queue states
+                let snapshot = self.snap_to_dump.as_mut().unwrap();
+                // dump block device state, assume all block devices are attached first
                 for i in 0..self.drive_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().block_states[i].queues =
+                    snapshot.block_states[i].queues =
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
                 }
+                // dump network device state, assume network devices are attached after all block
+                // devices
                 for i in 0..self.net_handler_id_map.len() {
-                    self.snap_to_dump.as_mut().unwrap().net_states[i].queues =
+                    snapshot.net_states[i].queues =
                         self.epoll_context.get_device_handler(i + self.drive_handler_id_map.len())
                             .unwrap().get_queues();
                 }
+                // dump vsock state, assume vsock is the last attached virtio device
+                snapshot.vsock_state.queues = self.epoll_context.get_device_handler(
+                        self.drive_handler_id_map.len() + self.net_handler_id_map.len())
+                    .unwrap().get_queues();
 
                 self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
                 self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
@@ -2123,6 +2145,7 @@ impl Vmm {
                         .map(|rl| rl.ops.map(|b| b.into_token_bucket()))
                         .unwrap_or(None),
                 },
+                epoll::Events::empty(),
             )
             .map_err(|e| {
                 VmmActionError::NetworkConfig(

@@ -63,8 +63,11 @@ pub enum StartMicrovmError {
     /// Failed to create a `RateLimiter` object.
     CreateRateLimiter(std::io::Error),
     #[cfg(feature = "vsock")]
-    /// Creating a vsock device can only fail if the /dev/vhost-vsock device cannot be open.
-    CreateVsockDevice(devices::virtio::vhost::Error),
+    /// Failed to create the backend for the vsock device.
+    CreateVsockBackend(devices::virtio::vsock::VsockUnixBackendError),
+    #[cfg(feature = "vsock")]
+    /// Failed to create the vsock device.
+    CreateVsockDevice(devices::virtio::vsock::VsockError),
     /// The device manager was not configured.
     DeviceManager,
     /// Cannot read from an Event file descriptor.
@@ -93,7 +96,6 @@ pub enum StartMicrovmError {
     RegisterEvent,
     /// Cannot initialize a MMIO Network Device or add a device to the MMIO Bus.
     RegisterNetDevice(device_manager::mmio::Error),
-    #[cfg(feature = "vsock")]
     /// Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus.
     RegisterVsockDevice(device_manager::mmio::Error),
     /// Cannot build seccomp filters.
@@ -143,6 +145,13 @@ impl Display for StartMicrovmError {
                 err_msg = err_msg.replace("\"", "");
 
                 write!(f, "Cannot create network device. {}", err_msg)
+            }
+            #[cfg(feature = "vsock")]
+            CreateVsockBackend(ref err) => {
+                let mut err_msg = format!("{:?}", err);
+                err_msg = err_msg.replace("\"", "");
+
+                write!(f, "Cannot create vsock backend. {}", err_msg)
             }
             DeviceManager => write!(f, "The device manager was not configured."),
             EventFd => write!(f, "Cannot read from an Event file descriptor."),
@@ -205,7 +214,6 @@ impl Display for StartMicrovmError {
                     err_msg
                 )
             }
-            #[cfg(feature = "vsock")]
             RegisterVsockDevice(ref err) => {
                 let mut err_msg = format!("{:?}", err);
                 err_msg = err_msg.replace("\"", "");
