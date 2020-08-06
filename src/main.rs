@@ -28,7 +28,6 @@ use std::sync::{Arc, RwLock};
 
 use api_server::{ApiServer, Error};
 use fc_util::validators::validate_instance_id;
-use fc_util::{now_monotime_us, now_cputime_us};
 use logger::{Metric, LOGGER, METRICS};
 use mmds::MMDS;
 use vmm::vmm_config::instance_info::{InstanceInfo, InstanceState};
@@ -153,8 +152,6 @@ fn main() {
         state: InstanceState::Uninitialized,
         id: instance_id,
         vmm_version: crate_version!().to_string(),
-        start_monotime_us: now_monotime_us(),
-        start_cputime_us: now_cputime_us(),
     }));
     let mmds_info = MMDS.clone();
     let (to_vmm, from_api) = channel();

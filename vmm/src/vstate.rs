@@ -584,12 +584,9 @@ impl Vcpu {
                             time_us: now_monotime_us(),
                             cputime_us: now_cputime_us()
                         });
-                        //let len = self.ts_126.len();
-                        //if len > 0 {
-                        //    eprintln!("since create_ts: time: {}us, cputime: {}us",
-                        //        self.ts_126[len-1].time_us - self.create_ts.time_us,
-                        //        self.ts_126[len-1].cputime_us - self.create_ts.cputime_us);
-                        //}
+                        fc_util::fc_log!("since create_ts: time: {}us, cputime: {}us",
+                            self.ts_126[0].time_us - self.create_ts.time_us,
+                            self.ts_126[0].cputime_us - self.create_ts.cputime_us);
                         //return Err(Error::VcpuUnhandledKvmExit)
                     }
 

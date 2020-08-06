@@ -6,6 +6,15 @@ extern crate libc;
 pub mod validators;
 pub mod byte_order;
 
+#[macro_export]
+macro_rules! fc_log {
+    ($($arg:tt)*) => ({
+        if std::option_env!("FC_LOG").is_some() {
+            println!($($arg)*);
+        }
+    })
+}
+
 pub fn timestamp_cycles() -> u64 {
     #[cfg(target_arch = "x86_64")]
     // Safe because there's nothing that can go wrong with this call.

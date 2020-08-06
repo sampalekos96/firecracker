@@ -59,7 +59,7 @@ use std::result;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Barrier, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
 
@@ -637,9 +637,6 @@ struct Vmm {
     // The level of seccomp filtering used. Seccomp filters are loaded before executing guest code.
     seccomp_level: u32,
 
-    // Start timestamp passed in from firerunner
-    start_monotime_us: u64,
-    start_cputime_us: u64,
     // Snapshot
     // load
     load_dir: Option<PathBuf>,
@@ -684,8 +681,6 @@ impl Vmm {
         let kvm = KvmContext::new()?;
         let vm = Vm::new(kvm.fd()).map_err(Error::Vm)?;
 
-        let start_monotime_us = api_shared_info.read().expect("Failed to read shared info").start_monotime_us;
-        let start_cputime_us = api_shared_info.read().expect("Failed to read shared info").start_cputime_us;
         // Snapshot
         let dump_dir = snapfaas_config.dump_dir;
         let (snap_sender, snap_receiver) = match dump_dir {
@@ -721,8 +716,6 @@ impl Vmm {
             from_api,
             write_metrics_event,
             seccomp_level,
-            start_monotime_us,
-            start_cputime_us,
             load_dir: snapfaas_config.load_dir,
             snap_to_load: snapfaas_config.parsed_json,
             dump_dir,
@@ -1592,6 +1585,8 @@ impl Vmm {
 
     fn start_microvm(&mut self) -> std::result::Result<VmmData, VmmActionError> {
         info!("VMM received instance start command");
+        let mut ts_vec = Vec::new();
+        ts_vec.push(Instant::now());
         //let t00 = now_monotime_us();
         if self.is_instance_initialized() {
             return Err(VmmActionError::StartMicrovm(
@@ -1600,8 +1595,8 @@ impl Vmm {
             ));
         }
         let request_ts = TimestampUs {
-            time_us: self.start_monotime_us,
-            cputime_us: self.start_cputime_us,
+            time_us: now_monotime_us(),
+            cputime_us: now_cputime_us(),
         };
 
         if self.load_dir.is_none() {
@@ -1618,6 +1613,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         //let t0 = now_monotime_us();
+        ts_vec.push(Instant::now());
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
@@ -1646,11 +1642,13 @@ impl Vmm {
 
         self.register_events()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        ts_vec.push(Instant::now());
         //let t1 = now_monotime_us();
 
         let vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        ts_vec.push(Instant::now());
         //let t2 = now_monotime_us();
 
         if self.dump_dir.is_some() {
@@ -1665,9 +1663,13 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        ts_vec.push(Instant::now());
         //let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement
-        //eprintln!("memory restoration took {} us, device restoration took {} us, vcpu restoration took {} us, vcpu kicking off took {} us", t0-t00, t1-t0, t2-t1, t3-t2);
+        fc_util::fc_log!("firecracker: memory restoration took: {} us", ts_vec[1].duration_since(ts_vec[0]).as_micros());
+        fc_util::fc_log!("firecracker: device restoration took: {} us", ts_vec[2].duration_since(ts_vec[1]).as_micros());
+        fc_util::fc_log!("firecracker: vcpu restoration took: {} us", ts_vec[3].duration_since(ts_vec[2]).as_micros());
+        fc_util::fc_log!("firecracker: vcpu kicking off took: {} us", ts_vec[4].duration_since(ts_vec[3]).as_micros());
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
@@ -2418,12 +2420,10 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
-        info!(
-            "Guest-boot-time = {:>6} us {} ms, {:>6} CPU us {} CPU ms",
+        fc_util::fc_log!(
+            "firecracker: Guest-boot-time: {:>6} us, {:>6} CPU us",
             boot_time_us,
-            boot_time_us / 1000,
             boot_time_cpu_us,
-            boot_time_cpu_us / 1000
         );
     }
 }
