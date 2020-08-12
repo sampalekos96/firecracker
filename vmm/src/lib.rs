@@ -54,6 +54,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::result;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -775,6 +776,7 @@ impl Vmm {
             let block_file = OpenOptions::new()
                 .read(true)
                 .write(!drive_config.is_read_only)
+                .custom_flags(if drive_config.is_root_device { 0 } else { libc::O_DIRECT })
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
@@ -846,25 +848,24 @@ impl Vmm {
             let block_file = OpenOptions::new()
                 .read(true)
                 .write(!drive_config.is_read_only)
+                .custom_flags(if drive_config.is_root_device { 0 } else { libc::O_DIRECT })
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
-            if self.load_dir.is_none() {
-                if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
+            if drive_config.is_root_device && drive_config.get_partuuid().is_some() {
+                kernel_config
+                    .cmdline
+                    .insert_str(format!(
+                        " root=PARTUUID={}",
+                        //The unwrap is safe as we are firstly checking that partuuid is_some().
+                        drive_config.get_partuuid().unwrap()
+                    ))
+                    .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
+                if drive_config.is_read_only {
                     kernel_config
                         .cmdline
-                        .insert_str(format!(
-                            " root=PARTUUID={}",
-                            //The unwrap is safe as we are firstly checking that partuuid is_some().
-                            drive_config.get_partuuid().unwrap()
-                        ))
+                        .insert_str(" ro")
                         .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
-                    if drive_config.is_read_only {
-                        kernel_config
-                            .cmdline
-                            .insert_str(" ro")
-                            .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
-                    }
                 }
             }
 
