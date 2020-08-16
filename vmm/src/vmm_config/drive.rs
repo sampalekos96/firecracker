@@ -75,6 +75,8 @@ pub struct BlockDeviceConfig {
     pub is_read_only: bool,
     /// Rate Limiter for I/O operations.
     pub rate_limiter: Option<RateLimiterConfig>,
+    /// Whether is opened with O_DIRECT
+    pub odirect: bool,
 }
 
 impl BlockDeviceConfig {

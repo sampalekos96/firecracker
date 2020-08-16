@@ -75,7 +75,7 @@ use kernel::loader as kernel_loader;
 use kvm::*;
 use logger::error::LoggerError;
 use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
-use memory_model::{GuestAddress, GuestMemory};
+use memory_model::{GuestAddress, GuestMemory, MemoryFileOption};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
 pub use sigsys_handler::setup_sigsys_handler;
@@ -253,6 +253,7 @@ impl Display for VmmActionError {
 }
 
 /// SnapFaaS config
+#[derive(Default)]
 pub struct SnapFaaSConfig {
     /// snapshot directory to load from
     pub load_dir: Option<PathBuf>,
@@ -261,9 +262,9 @@ pub struct SnapFaaSConfig {
     /// directory to dump to
     pub dump_dir: Option<PathBuf>,
     /// restore base memory by copying
-    pub copy_base: bool,
+    pub base: MemoryFileOption,
     /// restore diff memory by copying
-    pub copy_diff: bool,
+    pub diff: MemoryFileOption,
     /// use huge pages
     pub huge_page: bool,
     /// diff snapshot directory
@@ -650,10 +651,10 @@ struct Vmm {
     snap_evt: EventFd,
 
     // restore memory by copying
-    copy_base: bool,
+    base: MemoryFileOption,
     huge_page: bool,
     diff_dirs: Vec<PathBuf>,
-    copy_diff: bool,
+    diff: MemoryFileOption,
 }
 
 impl Vmm {
@@ -724,10 +725,10 @@ impl Vmm {
             snap_receiver,
             snap_sender,
             snap_evt,
-            copy_base: snapfaas_config.copy_base,
+            base: snapfaas_config.base,
             huge_page: snapfaas_config.huge_page,
             diff_dirs: snapfaas_config.diff_dirs,
-            copy_diff: snapfaas_config.copy_diff,
+            diff: snapfaas_config.diff,
         })
     }
 
@@ -776,7 +777,7 @@ impl Vmm {
             let block_file = OpenOptions::new()
                 .read(true)
                 .write(!drive_config.is_read_only)
-                .custom_flags(if drive_config.is_root_device { 0 } else { libc::O_DIRECT })
+                .custom_flags(if drive_config.odirect { libc::O_DIRECT } else { 0 })
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
@@ -848,7 +849,7 @@ impl Vmm {
             let block_file = OpenOptions::new()
                 .read(true)
                 .write(!drive_config.is_read_only)
-                .custom_flags(if drive_config.is_root_device { 0 } else { libc::O_DIRECT })
+                .custom_flags(if drive_config.odirect { libc::O_DIRECT } else { 0 })
                 .open(&drive_config.path_on_host)
                 .map_err(StartMicrovmError::OpenBlockDevice)?;
 
@@ -1151,8 +1152,8 @@ impl Vmm {
                         dir.clone(),
                         &self.diff_dirs,
                         self.huge_page,
-                        self.copy_base, // a base snapshot should always be provided
-                        self.copy_diff && self.diff_dirs.len() > 0, // only valid when a diff snapshot is provided
+                        self.base, // a base snapshot should always be provided
+                        self.diff, // only valid when a diff snapshot is provided
                         self.load_dir.is_some() && self.dump_dir.is_some(), // only clear soft dirty bits when generating diff snapshots
                     ).map_err(StartMicrovmError::GuestMemory)?);
         } else {

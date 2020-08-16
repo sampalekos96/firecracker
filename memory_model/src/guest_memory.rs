@@ -22,6 +22,15 @@ use DataInit;
 
 const PAGE_SIZE: usize = 4096;
 
+/// Snapshot memory file option
+#[derive(Default, Clone, Copy)]
+pub struct MemoryFileOption {
+    /// Restore eagerly
+    pub copy: bool,
+    /// Memory file should be opened with O_DIRECT
+    pub odirect: bool,
+}
+
 /// Errors associated with handling guest memory regions.
 #[derive(Debug)]
 pub enum Error {
@@ -116,20 +125,21 @@ impl GuestMemory {
         mut dir: PathBuf,
         diff_dirs: &Vec<PathBuf>,
         hugepage: bool,
-        base_copy: bool,
-        diff_copy: bool,
+        base: MemoryFileOption,
+        diff: MemoryFileOption,
         clear_soft_dirty_bits: bool,
     ) -> Result<GuestMemory> {
         if ranges.is_empty() {
             return Err(Error::NoMemoryRegions);
         }
 
-        let guest_mem = if base_copy {
+        let guest_mem = if base.copy {
             // we are copying memory
             // allocate anonymous memory
             let guest_mem = GuestMemory::new(ranges, false).expect("Failed to create new guest memory");
             dir.push("memory_dump");
-            let mut memory_dump = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT)
+            let mut memory_dump = OpenOptions::new().read(true)
+                .custom_flags(if base.odirect { libc::O_DIRECT } else { 0 })
                 .open(dir.as_path()).expect("Failed to open memory_dump");
             // open the file contain dirty regions to be loaded
             // dirty_regions cannot be opened using O_DIRECT
@@ -205,7 +215,8 @@ impl GuestMemory {
             // load the diff memory dump
             let mut dir = dir.clone();
             dir.push("memory_dump");
-            let mut memory_dump = OpenOptions::new().read(true).custom_flags(libc::O_DIRECT)
+            let mut memory_dump = OpenOptions::new().read(true)
+                .custom_flags(if diff.odirect { libc::O_DIRECT } else { 0 })
                 .open(dir.as_path()).expect("Failed to open memory_dump");
             let memory_dump_fd = memory_dump.as_raw_fd();
             dir.set_file_name("dirty_regions");
@@ -232,7 +243,7 @@ impl GuestMemory {
                             panic!("Unable to munmap a memory mapping");
                         }
                     }
-                    if diff_copy {
+                    if diff.copy {
                         let mapped_addr = unsafe {
                             libc::mmap(
                                 addr as *mut libc::c_void,
@@ -268,7 +279,7 @@ impl GuestMemory {
                 }
                 Ok(())
             }).unwrap();
-            if diff_copy {
+            if diff.copy {
                 memory_dump.read_vectored(bufs.as_mut_slice()).or_else(|e| Err(Error::IoError(e)))?;
             }
         }
