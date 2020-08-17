@@ -163,13 +163,7 @@ fn main() {
         .expect("Cannot clone API eventFD.");
 
     let snapfaas_config = vmm::SnapFaaSConfig {
-        load_dir: None,
-        parsed_json: None,
-        diff_dirs: Vec::new(),
-        dump_dir: None,
-        copy_base: false,
-        copy_diff: false,
-        huge_page: false,
+        ..Default::default()
     };
     let _vmm_thread_handle =
         vmm::start_vmm_thread(shared_info, api_event_fd, from_api, seccomp_level, snapfaas_config);
