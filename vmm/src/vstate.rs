@@ -567,6 +567,7 @@ impl Vcpu {
                         if let Some(ref sender) = snap_sender {
                             let mut vcpu_state = VcpuState::default();
                             self.dump_vcpu_state(&mut vcpu_state)?;
+                            vcpu_state.regs.rip += 1;
                             sender.send(VcpuInfo{
                                 id: self.id,
                                 state: vcpu_state,
