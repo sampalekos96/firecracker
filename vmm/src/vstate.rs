@@ -411,8 +411,9 @@ impl Vcpu {
     fn set_msrs(&self, vcpu_state: &VcpuState) -> result::Result<(), std::io::Error> {
         let entries = &vcpu_state.msr_entries;
 
+        // do not restore MSR_IA32_TSCDEADLINE here so always entries.len() - 1
         let vec_size_bytes =
-            std::mem::size_of::<kvm_msrs>() + (entries.len() * std::mem::size_of::<kvm_msr_entry>());
+            std::mem::size_of::<kvm_msrs>() + ((entries.len()-1) * std::mem::size_of::<kvm_msr_entry>());
         let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
         #[allow(clippy::cast_ptr_alignment)]
         let msrs: &mut kvm_msrs = unsafe {
@@ -420,9 +421,9 @@ impl Vcpu {
         };
 
         unsafe {
-            msrs.entries.as_mut_slice(entries.len()).copy_from_slice(&entries);
+            msrs.entries.as_mut_slice(entries.len()-1).copy_from_slice(&entries[..entries.len()-1]);
         }
-        msrs.nmsrs = entries.len() as u32;
+        msrs.nmsrs = entries.len() as u32 - 1;
         self.fd.set_msrs(msrs)
     }
 
@@ -448,12 +449,25 @@ impl Vcpu {
             regs[idx] = regs_vec[idx];
         }
 
+        self.set_msrs(vcpu_state)?;
+
         let lapic = kvm_lapic_state { regs };
         self.fd.set_lapic(&lapic)?;
 
         // this must be after lapic is restored
         // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
-        self.set_msrs(vcpu_state)?;
+        let tscdeadline_entry = vcpu_state.msr_entries[vcpu_state.msr_entries.len()-1];
+        let vec: Vec<u8> = Vec::with_capacity(std::mem::size_of::<kvm_msr_entry>());
+        #[allow(clippy::cast_ptr_alignment)]
+        let msrs: &mut kvm_msrs = unsafe {
+            &mut *(vec.as_ptr() as *mut kvm_msrs)
+        };
+
+        unsafe {
+            msrs.entries.as_mut_slice(1).copy_from_slice(&[tscdeadline_entry]);
+        }
+        msrs.nmsrs = 1;
+        self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
 
         self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
 
