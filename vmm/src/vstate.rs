@@ -691,6 +691,7 @@ impl Vcpu {
 
         thread_barrier.wait();
 
+        super::Vmm::log_boot_time(&self.create_ts);
         loop {
             let ret = self.run_emulation(&snap_barrier, &vcpu_snap_evt, &snap_sender);
             if !ret.is_ok() {
