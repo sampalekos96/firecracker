@@ -2422,6 +2422,9 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
+	
+        println!("child_process: Vm boot time: {} us", boot_time_us);
+        
         fc_util::fc_log!(
             "firecracker: Guest-boot-time: {:>6} us, {:>6} CPU us",
             boot_time_us,
