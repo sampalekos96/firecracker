@@ -48,17 +48,19 @@ mod vstate;
 
 use byteorder::{ByteOrder, LittleEndian};
 use futures::sync::oneshot;
-use std::collections::HashMap;
+use std::collections::{BTreeSet,HashMap};
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
+use std::io::{Write, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::result;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Barrier, RwLock};
+use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -213,6 +215,9 @@ pub enum VmmActionError {
     /// The action `insert_vsock_device` failed either because of bad user input (`ErrorKind::User`)
     /// or an internal error (`ErrorKind::Internal`).
     VsockConfig(ErrorKind, VsockError),
+    /// The action `dump_working_set` failed because of bad user input (`ErrorKind::User`) or
+    /// an internal error (`ErrorKind::Internal`).
+    DumpWorkingSet(ErrorKind, std::io::Error),
 }
 
 impl VmmActionError {
@@ -230,6 +235,7 @@ impl VmmActionError {
             SendCtrlAltDel(ref kind, _) => kind,
             #[cfg(feature = "vsock")]
             VsockConfig(ref kind, _) => kind,
+            DumpWorkingSet(ref kind, _) => kind,
         }
     }
 }
@@ -248,6 +254,7 @@ impl Display for VmmActionError {
             SendCtrlAltDel(_, ref err) => write!(f, "{}", err.to_string()),
             #[cfg(feature = "vsock")]
             VsockConfig(_, ref err) => write!(f, "{}", err.to_string()),
+            DumpWorkingSet(_, ref err) => write!(f, "{}", err.to_string()),
         }
     }
 }
@@ -322,6 +329,8 @@ pub enum VmmAction {
     /// Update a network interface, after microVM start. Currently, the only updatable properties
     /// are the RX and TX rate limiters.
     UpdateNetworkInterface(NetworkInterfaceUpdateConfig, OutcomeSender),
+    /// Dump the working set of current VM, i.e. all resident memory pages
+    DumpWorkingSet(std::path::PathBuf, OutcomeSender),
 }
 
 /// The enum represents the response sent by the VMM in case of success. The response is either
@@ -1921,6 +1930,23 @@ impl Vmm {
         0
     }
 
+    //pub fn get_dirty_bitmap(&self) -> Result<DirtyBitmap> {
+    //    let mut bitmap: DirtyBitmap = HashMap::new();
+    //    self.guest_memory.with_regions_mut(
+    //        |slot: usize, region: &GuestRegionMmap| -> Result<()> {
+    //            let bitmap_region = self
+    //                .vm
+    //                .fd()
+    //                .get_dirty_log(slot as u32, region.len() as usize)
+    //                .map_err(Error::DirtyBitmap)?;
+    //            bitmap.insert(slot, bitmap_region);
+    //            Ok(())
+    //        },
+    //    )?;
+    //    Ok(bitmap)
+    //}
+
+
     // Count the list of pages dirtied since the last call to this function.
     // Intended for diff snapshot generation
     //#[cfg(target_arch = "x86_64")]
@@ -2344,6 +2370,50 @@ impl Vmm {
             })
     }
 
+    fn dump_working_set(&mut self, mut dir: std::path::PathBuf) -> std::result::Result<VmmData, VmmActionError> {
+        let working_set_vec = self.vm.dump_working_set();
+        let mut ws = Vec::new();
+        if self.diff_dirs.len() > 0 {
+            let mut pages = std::collections::BTreeSet::new();
+            self.diff_dirs[0].push("dirty_regions");
+            let f = OpenOptions::new().read(true).open(&self.diff_dirs[0])
+                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
+            let reader = std::io::BufReader::new(f);
+            for line in reader.lines() { 
+                let line = line.expect("failed to read a line");
+                let strs: Vec<_> = line.split(",").collect();
+                let mut gfn = u64::from_str(strs[0]).expect("invalid page number");
+                let mut count = u64::from_str(strs[1]).expect("invalid region count");
+                while count > 0 {
+                    pages.insert(gfn);
+                    gfn += 1;
+                    count -= 1;
+                }
+            }
+            let working_set: BTreeSet<_> = working_set_vec.iter().cloned().collect();
+            let intersected: Vec<_> = pages.intersection(&working_set).cloned().collect();
+            let mut start = intersected[0];
+            let mut len = 1;
+            for i in 1..intersected.len() {
+                if intersected[i] - intersected[i-1] == 1 {
+                    len += 1
+                } else {
+                    ws.push(vec![start, len]);
+                    start = intersected[i];
+                    len = 1;
+                }
+            }
+        }
+        dir.push("WS");
+        let mut output_file = OpenOptions::new().write(true).create(true).open(dir.as_path())
+            .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
+        for v in ws.iter() {
+            write!(&mut output_file, "{},{}\n", v[0], v[1])
+                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
+        }
+        Ok(VmmData::Empty)
+    }
+
     fn send_response(outcome: VmmRequestOutcome, sender: OutcomeSender) {
         sender
             .send(outcome)
@@ -2411,6 +2481,9 @@ impl Vmm {
             }
             VmmAction::UpdateNetworkInterface(netif_update, sender) => {
                 Vmm::send_response(self.update_net_device(netif_update), sender);
+            }
+            VmmAction::DumpWorkingSet(dir, sender) => {
+                Vmm::send_response(self.dump_working_set(dir), sender);
             }
         };
         Ok(())

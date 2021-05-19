@@ -515,6 +515,12 @@ impl GuestMemory {
         Ok(())
     }
 
+    /// return a list of guest page numbers that are residents
+    pub fn dump_working_set(&self) -> Vec<u64> {
+        let (gfns_to_pfns, _) = self.get_pagemap(false);
+        gfns_to_pfns.keys().cloned().collect()
+    }
+
     ///// Write all initialized guest memory pages out to the writer and the guest physical page
     ///// numbers of these pages to the `page_number_file`.
     ///// Here being initialized means being present in physical RAM.

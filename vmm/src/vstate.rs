@@ -250,6 +250,10 @@ impl Vm {
             .expect("Failed to dump memory to a sparse file");
     }
 
+    pub fn dump_working_set(&self) -> Vec<u64> {
+        self.guest_mem.as_ref().unwrap().dump_working_set()
+    }
+
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
         let mut irqchip = kvm_irqchip {
             chip_id: KVM_IRQCHIP_IOAPIC,
