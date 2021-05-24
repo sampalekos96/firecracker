@@ -77,7 +77,7 @@ use kernel::loader as kernel_loader;
 use kvm::*;
 use logger::error::LoggerError;
 use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
-use memory_model::{GuestAddress, GuestMemory, MemoryFileOption};
+use memory_model::{GuestAddress, GuestMemory, MemoryFileOption, MemorySnapshotMeta, RegionList, MemorySnapshotLayer};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
 pub use sigsys_handler::setup_sigsys_handler;
@@ -149,6 +149,8 @@ pub enum Error {
     TimerFd(io::Error),
     /// Cannot open the VM file descriptor.
     Vm(vstate::Error),
+    /// Cannot write snapshot
+    SaveSnapshot(io::Error),
 }
 
 // Implementing Debug as these errors are mostly used in panics & expects.
@@ -172,6 +174,7 @@ impl std::fmt::Debug for Error {
             Serial(e) => write!(f, "Error writing to the serial console: {:?}", e),
             TimerFd(e) => write!(f, "Error creating timer fd: {}", e.to_string()),
             Vm(e) => write!(f, "Error opening VM fd: {:?}", e),
+            SaveSnapshot(e) => write!(f, "Error writing snapshot: {:?}", e),
         }
     }
 }
@@ -217,7 +220,7 @@ pub enum VmmActionError {
     VsockConfig(ErrorKind, VsockError),
     /// The action `dump_working_set` failed because of bad user input (`ErrorKind::User`) or
     /// an internal error (`ErrorKind::Internal`).
-    DumpWorkingSet(ErrorKind, std::io::Error),
+    DumpWorkingSet(ErrorKind, memory_model::GuestMemoryError),
 }
 
 impl VmmActionError {
@@ -254,7 +257,7 @@ impl Display for VmmActionError {
             SendCtrlAltDel(_, ref err) => write!(f, "{}", err.to_string()),
             #[cfg(feature = "vsock")]
             VsockConfig(_, ref err) => write!(f, "{}", err.to_string()),
-            DumpWorkingSet(_, ref err) => write!(f, "{}", err.to_string()),
+            DumpWorkingSet(_, ref err) => write!(f, "{:?}", err),
         }
     }
 }
@@ -263,7 +266,7 @@ impl Display for VmmActionError {
 #[derive(Default)]
 pub struct SnapFaaSConfig {
     /// snapshot directory to load from
-    pub load_dir: Option<PathBuf>,
+    pub load_dir: Vec<PathBuf>,
     /// parsed snapshot.json
     pub parsed_json: Option<Snapshot>,
     /// directory to dump to
@@ -274,8 +277,10 @@ pub struct SnapFaaSConfig {
     pub diff: MemoryFileOption,
     /// use huge pages
     pub huge_page: bool,
-    /// diff snapshot directory
-    pub diff_dirs: Vec<PathBuf>,
+    ///// diff snapshot directory
+    //pub diff_dirs: Vec<PathBuf>,
+    /// apply working set optimization
+    pub load_ws: bool,
 }
 
 /// This enum represents the public interface of the VMM. Each action contains various
@@ -330,7 +335,7 @@ pub enum VmmAction {
     /// are the RX and TX rate limiters.
     UpdateNetworkInterface(NetworkInterfaceUpdateConfig, OutcomeSender),
     /// Dump the working set of current VM, i.e. all resident memory pages
-    DumpWorkingSet(std::path::PathBuf, OutcomeSender),
+    DumpWorkingSet(OutcomeSender),
 }
 
 /// The enum represents the response sent by the VMM in case of success. The response is either
@@ -650,7 +655,7 @@ struct Vmm {
 
     // Snapshot
     // load
-    load_dir: Option<PathBuf>,
+    load_dir: Vec<PathBuf>,
     snap_to_load: Option<Snapshot>,
     // dump
     dump_dir: Option<PathBuf>,
@@ -662,8 +667,9 @@ struct Vmm {
     // restore memory by copying
     base: MemoryFileOption,
     huge_page: bool,
-    diff_dirs: Vec<PathBuf>,
+    //diff_dirs: Vec<PathBuf>,
     diff: MemoryFileOption,
+    load_ws: bool,
 }
 
 impl Vmm {
@@ -736,8 +742,9 @@ impl Vmm {
             snap_evt,
             base: snapfaas_config.base,
             huge_page: snapfaas_config.huge_page,
-            diff_dirs: snapfaas_config.diff_dirs,
+            //diff_dirs: snapfaas_config.diff_dirs,
             diff: snapfaas_config.diff,
+            load_ws: snapfaas_config.load_ws,
         })
     }
 
@@ -779,7 +786,6 @@ impl Vmm {
         &mut self,
         device_manager: &mut MMIODeviceManager,
     ) -> std::result::Result<(), StartMicrovmError> {
-        assert!(self.load_dir.is_some());
         let epoll_context = &mut self.epoll_context;
         for drive_config in self.block_device_configs.config_list.iter_mut() {
             // Add the block device from file.
@@ -1154,16 +1160,17 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::arch_memory_regions(mem_size);
-        if let Some(ref dir) = self.load_dir {
+        if !self.load_dir.is_empty() {
             self.guest_memory =
-                Some(GuestMemory::new_from_file(
+                Some(GuestMemory::new_from_snapshot(
                         &arch_mem_regions,
-                        dir.clone(),
-                        &self.diff_dirs,
+                        &self.load_dir,
+                        &self.snap_to_load.as_ref().unwrap().memory_meta,
+                        self.load_ws, // only eagerly load the working set
                         self.huge_page,
                         self.base, // a base snapshot should always be provided
                         self.diff, // only valid when a diff snapshot is provided
-                        self.load_dir.is_some() && self.dump_dir.is_some(), // only clear soft dirty bits when generating diff snapshots
+                        !self.load_dir.is_empty() && self.dump_dir.is_some(), // only clear soft dirty bits when generating diff snapshots
                     ).map_err(StartMicrovmError::GuestMemory)?);
         } else {
             self.guest_memory =
@@ -1206,7 +1213,7 @@ impl Vmm {
             (arch::IRQ_BASE, arch::IRQ_MAX),
         );
 
-        if self.load_dir.is_some() {
+        if !self.load_dir.is_empty() {
             self.attach_block_devices_snapshot(&mut device_manager)?;
             self.attach_net_devices_snapshot(&mut device_manager)?;
             #[cfg(feature = "vsock")]
@@ -1610,7 +1617,7 @@ impl Vmm {
             cputime_us: now_cputime_us(),
         };
 
-        if self.load_dir.is_none() {
+        if self.load_dir.is_empty() {
             self.check_health()
                 .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::User, e))?;
         }
@@ -1634,7 +1641,7 @@ impl Vmm {
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         let mut entry_addr = GuestAddress(0);
-        if let Some(_) = self.load_dir.as_ref() {
+        if !self.load_dir.is_empty() {
             for i in 0..self.drive_handler_id_map.len() {
                 self.restore_block_device(i as u64);
             }
@@ -1755,6 +1762,29 @@ impl Vmm {
             InstanceState::Uninitialized => false,
             _ => true,
         }
+    }
+
+    fn update_memory_meta(meta: &MemorySnapshotMeta, dirty_pages: &BTreeSet<usize>) -> MemorySnapshotMeta {
+        let mut new_meta = MemorySnapshotMeta::new();
+        for layer in meta {
+            let mut pages = BTreeSet::new();
+            for (start_gfn, count) in &layer.dirty_regions {
+                let mut i = *count;
+                let mut gfn = *start_gfn;
+                while i > 0 {
+                    pages.insert(gfn);
+                    i -= 1;
+                    gfn += 1;
+                }
+            }
+            let new_pages = pages.difference(&dirty_pages).cloned().collect();
+            let new_layer = MemorySnapshotLayer {
+                dirty_regions: GuestMemory::convert_to_regionlist(new_pages),
+                ..Default::default()
+            };
+            new_meta.push(new_layer);
+        }
+        new_meta
     }
 
     #[allow(clippy::unused_label)]
@@ -1887,16 +1917,34 @@ impl Vmm {
                 snapshot.vsock_state.queues = self.epoll_context.get_device_handler(
                         self.drive_handler_id_map.len() + self.net_handler_id_map.len())
                     .unwrap().get_queues();
+                // dump irqchip state
+                self.vm.dump_irqchip(snapshot).map_err(|e| Error::SaveSnapshot(e))?;
 
-                self.vm.dump_initialized_memory_to_file(self.dump_dir.as_ref().unwrap().clone());
-                self.vm.dump_irqchip(self.snap_to_dump.as_mut().unwrap())
-                    .expect("Failed dumping irqchip");
-                let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
-                self.dump_dir.as_mut().unwrap().push("snapshot.json");
-                std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
-                    .expect("Failed to write snapshot.json");
+                println!("snapshotting memory...");
+                if let Some(dirty_pages_set) = self.vm.dump_initialized_memory_to_file(
+                    self.dump_dir.as_ref().unwrap().clone()) {
+                    let mut new_memory_meta = if self.load_dir.is_empty() {
+                        MemorySnapshotMeta::new()
+                    } else {
+                        // generate a diff snapshot
+                        Vmm::update_memory_meta(&snapshot.memory_meta, &dirty_pages_set)
+                    };
+                    new_memory_meta.push(MemorySnapshotLayer{
+                        dirty_regions: GuestMemory::convert_to_regionlist(dirty_pages_set),
+                        ..Default::default()
+                    });
+                    snapshot.memory_meta = new_memory_meta;
 
-                println!("Snapshot creation succeeds!");
+                    let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
+                    self.dump_dir.as_mut().unwrap().push("snapshot.json");
+                    std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
+                        .map_err(|e| Error::SaveSnapshot(e))?;
+
+                    println!("Snapshot creation succeeds!");
+                } else {
+                    eprintln!("Snapshot creation failed.");
+                }
+
 
                 self.stop(i32::from(FC_EXIT_CODE_OK));
             }
@@ -1979,7 +2027,7 @@ impl Vmm {
         kernel_image_path: String,
         kernel_cmdline: Option<String>,
     ) -> std::result::Result<VmmData, VmmActionError> {
-        if self.load_dir.is_some() {
+        if !self.load_dir.is_empty() {
             return Ok(VmmData::Empty);
         }
         if self.is_instance_initialized() {
@@ -2370,48 +2418,25 @@ impl Vmm {
             })
     }
 
-    fn dump_working_set(&mut self, mut dir: std::path::PathBuf) -> std::result::Result<VmmData, VmmActionError> {
-        let working_set_vec = self.vm.dump_working_set();
-        let mut ws = Vec::new();
-        if self.diff_dirs.len() > 0 {
-            let mut pages = std::collections::BTreeSet::new();
-            self.diff_dirs[0].push("dirty_regions");
-            let f = OpenOptions::new().read(true).open(&self.diff_dirs[0])
-                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
-            let reader = std::io::BufReader::new(f);
-            for line in reader.lines() { 
-                let line = line.expect("failed to read a line");
-                let strs: Vec<_> = line.split(",").collect();
-                let mut gfn = u64::from_str(strs[0]).expect("invalid page number");
-                let mut count = u64::from_str(strs[1]).expect("invalid region count");
-                while count > 0 {
-                    pages.insert(gfn);
-                    gfn += 1;
-                    count -= 1;
-                }
-            }
-            let working_set: BTreeSet<_> = working_set_vec.iter().cloned().collect();
-            let intersected: Vec<_> = pages.intersection(&working_set).cloned().collect();
-            let mut start = intersected[0];
-            let mut len = 1;
-            for i in 1..intersected.len() {
-                if intersected[i] - intersected[i-1] == 1 {
-                    len += 1
-                } else {
-                    ws.push(vec![start, len]);
-                    start = intersected[i];
-                    len = 1;
-                }
-            }
+    // If load_dir is provided and diff_dirs is empty, the working set is off the full function
+    // snapshot.
+    // If diff_dirs size is exactly one, the working set if off the diff snapshot.
+    // All the other cases, the function is a noop
+    // When the function is not a noop, it generates a metadata file to the directory given by the
+    // input parameter.
+    fn dump_working_set(&mut self) -> std::result::Result<VmmData, VmmActionError> {
+        if let Some(snapshot) = self.snap_to_load.as_mut() {
+            // we are sure this is a valid snapshot
+            let base_layer = snapshot.memory_meta.last_mut().unwrap();
+            let dir = self.load_dir.last().unwrap().clone();
+            self.vm.dump_working_set(dir, base_layer)
+                .map(|_| VmmData::Empty)
+                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))
+        } else {
+            let custom_io_error = std::io::Error::new(io::ErrorKind::Other, "invalid snapshot");
+            Err(VmmActionError::DumpWorkingSet(ErrorKind::User,
+                                               memory_model::GuestMemoryError::IoError(custom_io_error)))
         }
-        dir.push("WS");
-        let mut output_file = OpenOptions::new().write(true).create(true).open(dir.as_path())
-            .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
-        for v in ws.iter() {
-            write!(&mut output_file, "{},{}\n", v[0], v[1])
-                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
-        }
-        Ok(VmmData::Empty)
     }
 
     fn send_response(outcome: VmmRequestOutcome, sender: OutcomeSender) {
@@ -2482,8 +2507,8 @@ impl Vmm {
             VmmAction::UpdateNetworkInterface(netif_update, sender) => {
                 Vmm::send_response(self.update_net_device(netif_update), sender);
             }
-            VmmAction::DumpWorkingSet(dir, sender) => {
-                Vmm::send_response(self.dump_working_set(dir), sender);
+            VmmAction::DumpWorkingSet(sender) => {
+                Vmm::send_response(self.dump_working_set(), sender);
             }
         };
         Ok(())
@@ -2495,9 +2520,9 @@ impl Vmm {
 
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
-	
+
         println!("child_process: Vm boot time: {} us", boot_time_us);
-        
+
         fc_util::fc_log!(
             "firecracker: Guest-boot-time: {:>6} us, {:>6} CPU us",
             boot_time_us,

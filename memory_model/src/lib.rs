@@ -10,6 +10,8 @@
 #![deny(missing_docs)]
 
 extern crate libc;
+#[macro_use]
+extern crate serde_derive;
 
 /// Types for which it is safe to initialize from raw data.
 ///
@@ -57,5 +59,5 @@ mod mmap;
 
 pub use guest_address::GuestAddress;
 pub use guest_memory::Error as GuestMemoryError;
-pub use guest_memory::{MemoryFileOption, GuestMemory};
+pub use guest_memory::{MemoryFileOption, GuestMemory, MemorySnapshotMeta, RegionList, MemorySnapshotLayer};
 pub use mmap::{Error as MemoryMappingError, MemoryMapping};

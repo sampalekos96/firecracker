@@ -12,6 +12,7 @@ use std::result;
 use std::sync::{Arc, Barrier};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::collections::BTreeSet;
 
 use super::{KvmContext, TimestampUs};
 use arch;
@@ -25,7 +26,7 @@ use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, k
     kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
-use memory_model::{GuestAddress, GuestMemory, GuestMemoryError};
+use memory_model::{GuestAddress, GuestMemory, GuestMemoryError, MemorySnapshotMeta};
 use sys_util::{EventFd};
 #[cfg(target_arch = "x86_64")]
 use vmm_config::machine_config::CpuFeaturesTemplate;
@@ -146,6 +147,8 @@ pub struct Snapshot {
     pub vsock_state: VirtioState,
     /// Vcpu
     pub vcpu_states: Vec<VcpuState>,
+    /// Memory
+    pub memory_meta: MemorySnapshotMeta,
 }
 
 fn get_ioapic_state(vmfd: &VmFd) -> result::Result<IoapicState, io::Error> {
@@ -245,13 +248,19 @@ impl Vm {
 
     /// Generate memory dump under the provided directory `dir`.
     /// Memory dump contains only dirtied memory.
-    pub fn dump_initialized_memory_to_file(&self, dir: PathBuf) {
-        self.guest_mem.as_ref().unwrap().dump_initialized_memory_to_file(dir)
-            .expect("Failed to dump memory to a sparse file");
+    pub fn dump_initialized_memory_to_file(&self, dir: PathBuf) -> Option<BTreeSet<usize>> {
+        match self.guest_mem.as_ref().unwrap().snapshot_memory(dir) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("failed to dump initialized memory: {:?}", e);
+                None
+            },
+        }
     }
 
-    pub fn dump_working_set(&self) -> Vec<u64> {
-        self.guest_mem.as_ref().unwrap().dump_working_set()
+    pub fn dump_working_set(&self, dir: PathBuf, base_layer: &mut memory_model::MemorySnapshotLayer)
+        -> std::result::Result<(), GuestMemoryError> {
+        self.guest_mem.as_ref().unwrap().dump_working_set(dir, base_layer)
     }
 
     fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
@@ -565,6 +574,7 @@ impl Vcpu {
                      snap_sender: &Option<Sender<VcpuInfo>>,
                      //from_snapshot: bool,
                      ) -> Result<()> {
+        println!("running");
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {

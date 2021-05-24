@@ -19,7 +19,7 @@ use libc;
 
 use DataInit;
 
-const PM_ENTRY_SIZE:u64 = 8;
+const PM_ENTRY_SIZE: usize = 8;
 /// Errors associated with memory mapping.
 #[derive(Debug)]
 pub enum Error {
@@ -119,9 +119,9 @@ impl MemoryMapping {
     }
 
     // Helper function
-    fn get_pfn(num: u64) -> u64 {
+    fn get_pfn(num: u64) -> usize {
         let mask = 1 << 55 - 1;
-        num & mask
+        (num & mask) as usize
     }
 
     // helper function to get the bit at `bit_pos` of `num`
@@ -136,18 +136,15 @@ impl MemoryMapping {
     pub fn get_pagemap(
         &self,
         pfn_to_gfn: bool,
-        page_i_base: u64,
-        page_size: u64,
-    ) -> (BTreeMap<u64, u64>, Vec<u64>) {
+        page_i_base: usize,
+        page_size: usize,
+    ) -> (BTreeMap<usize, usize>, Vec<usize>) {
         let path = format!("/proc/{}/pagemap", std::process::id());
-        let addr = self.addr as u64;
-        let size = self.size as u64;
-        let offset = addr/page_size*PM_ENTRY_SIZE;
-
+        let offset = (self.addr as usize)/page_size*PM_ENTRY_SIZE;
         let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
-        pagemap.seek(SeekFrom::Start(offset)).expect("Failed to seek /proc/PID/pagemap");
+        pagemap.seek(SeekFrom::Start(offset as u64)).expect("Failed to seek /proc/PID/pagemap");
 
-        let num_pages = (size / page_size) as usize;
+        let num_pages = self.size / page_size;
         let mut buf = [0 as u8; 8];
         let mut mapping = BTreeMap::new();
         let mut dirty_list = Vec::new();
@@ -158,13 +155,13 @@ impl MemoryMapping {
             if MemoryMapping::get_bit(entry, 63) == 1 {
                 let pfn = MemoryMapping::get_pfn(entry);
                 if pfn_to_gfn {
-                    mapping.insert(pfn, page_i_base + page_i as u64);
+                    mapping.insert(pfn, page_i_base + page_i);
                 } else {
-                    mapping.insert(page_i_base + page_i as u64, pfn);
+                    mapping.insert(page_i_base + page_i, pfn);
                 }
             }
             if MemoryMapping::get_bit(entry, 55) == 1 {
-                dirty_list.push(page_i_base + page_i as u64);
+                dirty_list.push(page_i_base + page_i);
             }
         }
         (mapping, dirty_list)
