@@ -7,7 +7,8 @@
 
 //! Track memory regions that are mapped to the guest microVM.
 
-use std::io::{Read, Write, BufRead, BufReader};
+use std::io::IoSlice;
+use std::io::{Read, Write, Seek, SeekFrom};
 use std::fs::{OpenOptions, File};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,12 +143,12 @@ impl GuestMemory {
             // need to check if the region is within the mapping
             // the x86 carved out is at 4GiB, so for VM up to 3GiB
             // the check should never be reached as there is only one mapping
-            while i < dirty_regions.len() && (dirty_regions[i].0 + dirty_regions[i].1) * PAGE_SIZE <= guest_base.offset() + size {
-                println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+            while i < dirty_regions.len() && (dirty_regions[i].0 < guest_base.offset() + size) {
+                //println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                 let guest_addr = dirty_regions[i].0 * PAGE_SIZE;
-                let addr = ptr + (guest_addr - guest_base.offset());
                 let region_len = dirty_regions[i].1 * PAGE_SIZE;
 
+                let addr = ptr + (guest_addr - guest_base.offset());
                 let buf = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, region_len) };
                 bufs.push(std::io::IoSliceMut::new(buf));
                 i += 1;
@@ -186,7 +187,7 @@ impl GuestMemory {
             if !load_ws && (i == 1 && diff.copy) || (i == 0 && load_dir.len() == 1 && base.copy) {
                 // eagerly only applicable when diff with no WS or only base with no WS
                 // WS dealt at the end
-                println!("VMM: eagerly restoring layer {}...", i);
+                //println!("VMM: eagerly restoring layer {} in {:?}...", i, dir);
                 dir.push("memory_dump");
                 let mut memory_dump = OpenOptions::new()
                     .read(true)
@@ -202,6 +203,7 @@ impl GuestMemory {
                     &layer.dirty_regions
                 };
                 dir.push("memory_dump_sparse");
+                //println!("VMM: lazily restoring layer {} in {:?}...", i, dir);
                 let memory_dump = OpenOptions::new()
                     .read(true)
                     .custom_flags(if odirect { libc::O_DIRECT } else { 0 })
@@ -235,7 +237,7 @@ impl GuestMemory {
                         if mapped_addr  == libc::MAP_FAILED {
                             panic!("Unable to mmap the diff snapshot");
                         }
-                        println!("filmmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+                       // println!("file-mmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                         i += 1;
                     }
                     Ok(())
@@ -245,6 +247,7 @@ impl GuestMemory {
         if load_ws {
             let mut dir = load_dir.last().unwrap().clone();
             dir.push("WS_dump");
+            //println!("VMM: eagerly restoring WS at {:?}...", dir);
             let mut memory_dump = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECT)
@@ -252,193 +255,13 @@ impl GuestMemory {
                 .map_err(|e| Error::IoError(e))?;
             guest_mem.copy_load_memory(&mut memory_dump, &memory_meta.last().unwrap().ws)?;
         }
-        //let mut dir = load_dir[0].clone();
-        //let guest_mem = if base.copy {
-        //    // we are copying memory
-        //    // allocate anonymous memory
-        //    dir.push("memory_dump");
-        //    let mut memory_dump = OpenOptions::new()
-        //        .read(true)
-        //        .custom_flags(if base.odirect { libc::O_DIRECT } else { 0 })
-        //        .open(dir.as_path())
-        //        .map_err(|e| Error::IoError(e))?;
-
-        //    let mut bufs = Vec::new();
-        //    for dirty_region in dirty_regions {
-        //        let guest_addr = dirty_region[0] * PAGE_SIZE;
-        //        let buf_size = dirty_region[1] * PAGE_SIZE;
-        //            //println!("dirty region at {} of size {}", guest_addr, buf_size);
-        //        let addr = ptr + (guest_addr - guest_base.offset());
-        //        let buf = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, buf_size) };
-        //        bufs.push(std::io::IoSliceMut::new(buf));
-        //    }
-        //    memory_dump.read_vectored(bufs.as_mut_slice()).or_else(|e| Err(Error::IoError(e)))?;
-        //    guest_mem
-        //} else {
-        //    let mut regions = Vec::<MemoryRegion>::new();
-        //    dir.push("memory_dump_sparse");
-        //    let fd = File::open(dir.as_path()).expect("File::open failed").into_raw_fd();
-        //    for range in ranges.iter() {
-        //        if let Some(last) = regions.last() {
-        //            if last
-        //                .guest_base
-        //                .checked_add(last.mapping.size())
-        //                .map_or(true, |a| a > range.0)
-        //            {
-        //                return Err(Error::MemoryRegionOverlap);
-        //            }
-        //        }
-
-        //        let mapping = MemoryMapping::new_from_file(range.1, fd, range.0.offset(), hugepage, false)
-        //            .map_err(Error::MemoryMappingFailed)?;
-        //        regions.push(MemoryRegion {
-        //            mapping,
-        //            guest_base: range.0,
-        //        });
-        //    }
-        //    GuestMemory {
-        //        regions: Arc::new(regions),
-        //    }
-        //};
-        //if load_ws && diff_dirs.len() == 1 {
-        //    let f = OpenOptions::new()
-        //        .read(true)
-        //        .custom_flags(if diff.odirect { libc::O_DIRECT } else { 0 })
-        //        .open(dir.as_path())
-        //        .expect("Failed to open memory region file");
-        //    let regions = serde_json::from_reader(f);
-
-        //for dir in diff_dirs {
-        ////if let Some(mut dir) = diff_dir {
-        //    //println!("loading diff snapshot");
-        //    // load the diff memory dump
-        //    let mut dir = dir.clone();
-        //    dir.push("memory_dump");
-        //    let mut memory_dump = OpenOptions::new().read(true)
-        //        .custom_flags(if diff.odirect { libc::O_DIRECT } else { 0 })
-        //        .open(dir.as_path()).expect("Failed to open memory_dump");
-        //    let memory_dump_fd = memory_dump.as_raw_fd();
-
-        //    if load_ws && diff_dirs.len() == 1 {
-        //        dir.set_file_name("NON_WS");
-        //    } else {
-        //        dir.set_file_name("dirty_regions");
-        //    }
-        //    // dirty_regions cannot be opened using O_DIRECT
-        //    // since its size is not a multiple of logical block size
-        //    let mut lines_iter = BufReader::new(File::open(dir.as_path()).expect("Failed to open the region file"))
-        //        .lines().map(|l| l.expect("Failed to read regions"));
-        //    let mut bufs = Vec::new();
-        //    let mut file_offset = 0;
-        //    guest_mem.with_regions_mut(|_, guest_base, _, ptr| ->Result<()> {
-        //        loop {
-        //            let next_line = lines_iter.next();
-        //            if next_line.is_none() {
-        //                break;
-        //            }
-        //            let line = next_line.unwrap();
-        //            let dirty_region = line.split(',').map(|x| x.parse::<usize>().expect("Failed to parse a region"))
-        //                .collect::<Vec<usize>>();
-        //            let offset = dirty_region[0] * PAGE_SIZE;
-        //            let addr = ptr + offset - guest_base.offset();
-        //            let region_len = dirty_region[1] * PAGE_SIZE;
-        //            unsafe {
-        //                if libc::munmap(addr as *mut libc::c_void, region_len) < 0 {
-        //                    panic!("Unable to munmap a memory mapping");
-        //                }
-        //            }
-        //            if diff.copy {
-        //                let mapped_addr = unsafe {
-        //                    libc::mmap(
-        //                        addr as *mut libc::c_void,
-        //                        region_len,
-        //                        libc::PROT_READ | libc::PROT_WRITE,
-        //                        libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_NORESERVE | libc::MAP_ANONYMOUS,
-        //                        -1,
-        //                        0,
-        //                    )
-        //                };
-        //                if mapped_addr  == libc::MAP_FAILED {
-        //                    panic!("Unable to mmap the diff snapshot");
-        //                }
-        //                let buf = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, region_len) };
-        //                bufs.push(std::io::IoSliceMut::new(buf));
-        //                continue;
-        //            } else {
-        //                let mapped_addr = unsafe {
-        //                    libc::mmap(
-        //                        addr as *mut libc::c_void,
-        //                        region_len,
-        //                        libc::PROT_READ | libc::PROT_WRITE,
-        //                        libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-        //                        memory_dump_fd,
-        //                        file_offset as libc::off_t,
-        //                    )
-        //                };
-        //                if mapped_addr  == libc::MAP_FAILED {
-        //                    panic!("Unable to mmap the diff snapshot");
-        //                }
-        //            }
-        //            file_offset += region_len;
-        //        }
-        //        Ok(())
-        //    }).unwrap();
-        //    if diff.copy {
-        //        memory_dump.read_vectored(bufs.as_mut_slice()).or_else(|e| Err(Error::IoError(e)))?;
-        //    }
-        //}
-        //if load_ws {
-        //    dir.set_file_name("WS");
-        //    // dirty_regions cannot be opened using O_DIRECT
-        //    // since its size is not a multiple of logical block size
-        //    let mut lines_iter = BufReader::new(File::open(dir.as_path()).expect("Failed to open the region file"))
-        //        .lines().map(|l| l.expect("Failed to read regions"));
-        //    let mut bufs = Vec::new();
-        //    let mut file_offset = 0;
-        //    guest_mem.with_regions_mut(|_, guest_base, _, ptr| ->Result<()> {
-        //        loop {
-        //            let next_line = lines_iter.next();
-        //            if next_line.is_none() {
-        //                break;
-        //            }
-        //            let line = next_line.unwrap();
-        //            let dirty_region = line.split(',').map(|x| x.parse::<usize>().expect("Failed to parse a region"))
-        //                .collect::<Vec<usize>>();
-        //            let offset = dirty_region[0] * PAGE_SIZE;
-        //            let addr = ptr + offset - guest_base.offset();
-        //            let region_len = dirty_region[1] * PAGE_SIZE;
-        //            unsafe {
-        //                if libc::munmap(addr as *mut libc::c_void, region_len) < 0 {
-        //                    panic!("Unable to munmap a memory mapping");
-        //                }
-        //            }
-        //            let mapped_addr = unsafe {
-        //                libc::mmap(
-        //                    addr as *mut libc::c_void,
-        //                    region_len,
-        //                    libc::PROT_READ | libc::PROT_WRITE,
-        //                    libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_NORESERVE | libc::MAP_ANONYMOUS,
-        //                    -1,
-        //                    0,
-        //                )
-        //            };
-        //            if mapped_addr  == libc::MAP_FAILED {
-        //                panic!("Unable to mmap the diff snapshot");
-        //            }
-        //            let buf = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, region_len) };
-        //            bufs.push(std::io::IoSliceMut::new(buf));
-        //        }
-        //        Ok(())
-        //    }).unwrap();
-        //    memory_dump.read_vectored(bufs.as_mut_slice()).or_else(|e| Err(Error::IoError(e)))?;
-        //}
         if clear_soft_dirty_bits {
             GuestMemory::clear_soft_dirty_bits();
             //let (_, dirty_gfns) = guest_mem.get_pagemap(false);
             //println!("pages marked soft dirty: {}", dirty_gfns.len());
         }
-        println!("create memory");
-        std::thread::sleep(std::time::Duration::from_millis(100000000));
+        //println!("VMM: restored memory");
+        //std::thread::sleep(std::time::Duration::from_millis(100000000));
 
         Ok(guest_mem)
     }
@@ -541,7 +364,7 @@ impl GuestMemory {
             }
             let guest_frame_number = gfns_dirty_vec[start];
             let num_guest_frames = test - start; // test - 1 - start + 1
-            println!("VMM: dump region {}:{}", guest_frame_number, num_guest_frames);
+            //println!("VMM: dump region {}:{}", guest_frame_number, num_guest_frames);
             self.write_from_memory(
                 GuestAddress(guest_frame_number as usize * PAGE_SIZE),
                 memory_dump,
@@ -566,13 +389,13 @@ impl GuestMemory {
         let gfns_dirty_set: BTreeSet<_> = gfns_dirty_vec.iter().cloned().collect();
         // read-only
         let gfns_ro_vec: Vec<_> = gfns_accessed_set.difference(&gfns_dirty_set).cloned().collect();
-        println!("VMM: {} pages accessed\n{} pages only read\n{} pages written",
+        println!("VMM: {} pages accessed, {} pages only read, {} pages written",
             gfns_accessed_vec.len(),
             gfns_ro_vec.len(),
             gfns_dirty_vec.len());
 
         // open files
-        dir.set_file_name("memory_dump");
+        dir.push("memory_dump");
         let mut memory_dump = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -624,7 +447,7 @@ impl GuestMemory {
             GuestAddress(0),
             &mut memory_dump_sparse,
             self.end_addr().offset())?;
-        println!("punching holes...");
+        //println!("punching holes...");
         // a hole at the beginning
         if gfns_dirty_vec[0] > 0 {
             let offset = 0;
@@ -697,16 +520,22 @@ impl GuestMemory {
 
         let ws_page_set: BTreeSet<_> = base_set.intersection(&accessed_set).cloned().collect();
         let non_ws_page_set: BTreeSet<_> = base_set.difference(&accessed_set).cloned().collect();
-
-        dir.push("WS_dump");
-        let mut ws_dump = OpenOptions::new().write(true).truncate(true).open(dir.as_path())
-            .map_err(|e| Error::IoError(e))?;
-        self.generate_memory_dump(&ws_page_set.iter().cloned().collect(), &mut ws_dump)?;
-
         base_layer.ws = GuestMemory::convert_to_regionlist(ws_page_set);
         base_layer.non_ws = GuestMemory::convert_to_regionlist(non_ws_page_set);
 
-        Ok(())
+        dir.push("WS_dump");
+        let mut ws_dump = OpenOptions::new().write(true).truncate(true).create(true).open(dir.as_path())
+            .map_err(|e| Error::IoError(e))?;
+        dir.set_file_name("memory_dump_sparse");
+        let mut memory_dump = OpenOptions::new().read(true).open(dir.as_path()).map_err(|e| Error::IoError(e))?;
+        let mut bufs = Vec::new();
+        for (ref gfn, ref count) in &base_layer.ws {
+            memory_dump.seek(SeekFrom::Start((gfn*PAGE_SIZE) as u64)).map_err(|e| Error::IoError(e))?;
+            bufs.push(vec![0u8; count * PAGE_SIZE]);
+            memory_dump.read_exact(bufs.last_mut().unwrap()).map_err(|e| Error::IoError(e))?;
+        }
+        let iovec: Vec<_> = bufs.iter().map(|buf| IoSlice::new(&buf)).collect();
+        ws_dump.write_vectored(&iovec).map(|_| ()).map_err(|e| Error::IoError(e))
     }
 
     ///// Write all initialized guest memory pages out to the writer and the guest physical page

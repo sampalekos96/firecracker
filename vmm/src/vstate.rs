@@ -574,7 +574,7 @@ impl Vcpu {
                      snap_sender: &Option<Sender<VcpuInfo>>,
                      //from_snapshot: bool,
                      ) -> Result<()> {
-        println!("running");
+        //println!("running");
         match self.fd.run() {
             Ok(run) => match run {
                 VcpuExit::IoIn(addr, data) => {
@@ -637,7 +637,7 @@ impl Vcpu {
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 VcpuExit::Shutdown => {
-                    info!("Received KVM_EXIT_SHUTDOWN signal");
+                    println!("Received KVM_EXIT_SHUTDOWN signal");
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 // Documentation specifies that below kvm exits are considered

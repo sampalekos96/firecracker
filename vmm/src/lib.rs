@@ -53,14 +53,12 @@ use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::fs::{metadata, File, OpenOptions};
 use std::io;
-use std::io::{Write, BufRead};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::result;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Barrier, RwLock};
-use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -77,7 +75,7 @@ use kernel::loader as kernel_loader;
 use kvm::*;
 use logger::error::LoggerError;
 use logger::{AppInfo, Level, LogOption, Metric, LOGGER, METRICS};
-use memory_model::{GuestAddress, GuestMemory, MemoryFileOption, MemorySnapshotMeta, RegionList, MemorySnapshotLayer};
+use memory_model::{GuestAddress, GuestMemory, MemoryFileOption, MemorySnapshotMeta, MemorySnapshotLayer};
 #[cfg(target_arch = "aarch64")]
 use serde_json::Value;
 pub use sigsys_handler::setup_sigsys_handler;
@@ -1920,14 +1918,14 @@ impl Vmm {
                 // dump irqchip state
                 self.vm.dump_irqchip(snapshot).map_err(|e| Error::SaveSnapshot(e))?;
 
-                println!("snapshotting memory...");
+                //println!("snapshotting memory...");
                 if let Some(dirty_pages_set) = self.vm.dump_initialized_memory_to_file(
                     self.dump_dir.as_ref().unwrap().clone()) {
                     let mut new_memory_meta = if self.load_dir.is_empty() {
                         MemorySnapshotMeta::new()
                     } else {
                         // generate a diff snapshot
-                        Vmm::update_memory_meta(&snapshot.memory_meta, &dirty_pages_set)
+                        Vmm::update_memory_meta(&self.snap_to_load.as_ref().unwrap().memory_meta, &dirty_pages_set)
                     };
                     new_memory_meta.push(MemorySnapshotLayer{
                         dirty_regions: GuestMemory::convert_to_regionlist(dirty_pages_set),
@@ -1937,10 +1935,11 @@ impl Vmm {
 
                     let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
                     self.dump_dir.as_mut().unwrap().push("snapshot.json");
+                    //println!("writing meta to {:?}", self.dump_dir);
                     std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                         .map_err(|e| Error::SaveSnapshot(e))?;
 
-                    println!("Snapshot creation succeeds!");
+                    println!("VMM: Snapshot creation succeeds");
                 } else {
                     eprintln!("Snapshot creation failed.");
                 }
@@ -2428,10 +2427,17 @@ impl Vmm {
         if let Some(snapshot) = self.snap_to_load.as_mut() {
             // we are sure this is a valid snapshot
             let base_layer = snapshot.memory_meta.last_mut().unwrap();
-            let dir = self.load_dir.last().unwrap().clone();
-            self.vm.dump_working_set(dir, base_layer)
+            let mut dir = self.load_dir.last().unwrap().clone();
+            self.vm.dump_working_set(dir.clone(), base_layer)
                 .map(|_| VmmData::Empty)
-                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))
+                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::User, e))?;
+            
+            let snap_str = serde_json::to_string(snapshot).unwrap();
+            dir.push("snapshot.json");
+            //println!("writing meta to {:?}", dir);
+            std::fs::write(dir, snap_str).map(|_| VmmData::Empty)
+                .map_err(|e| VmmActionError::DumpWorkingSet(ErrorKind::Internal,
+                                                            memory_model::GuestMemoryError::IoError(e)))
         } else {
             let custom_io_error = std::io::Error::new(io::ErrorKind::Other, "invalid snapshot");
             Err(VmmActionError::DumpWorkingSet(ErrorKind::User,
@@ -2521,7 +2527,7 @@ impl Vmm {
         let boot_time_us = now_us - t0_ts.time_us;
         let boot_time_cpu_us = now_cpu_us - t0_ts.cputime_us;
 
-        println!("child_process: Vm boot time: {} us", boot_time_us);
+        println!("VMM: boot time: {} us", boot_time_us);
 
         fc_util::fc_log!(
             "firecracker: Guest-boot-time: {:>6} us, {:>6} CPU us",
