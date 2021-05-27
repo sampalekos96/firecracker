@@ -1682,10 +1682,7 @@ impl Vmm {
         ts_vec.push(Instant::now());
         //let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement
-        fc_util::fc_log!("firecracker: memory restoration took: {} us", ts_vec[1].duration_since(ts_vec[0]).as_micros());
-        fc_util::fc_log!("firecracker: device restoration took: {} us", ts_vec[2].duration_since(ts_vec[1]).as_micros());
-        fc_util::fc_log!("firecracker: vcpu restoration took: {} us", ts_vec[3].duration_since(ts_vec[2]).as_micros());
-        fc_util::fc_log!("firecracker: vcpu kicking off took: {} us", ts_vec[4].duration_since(ts_vec[3]).as_micros());
+        println!("VMM: restore memory: {} us", ts_vec[1].duration_since(ts_vec[0]).as_micros());
         // Use expect() to crash if the other thread poisoned this lock.
         self.shared_info
             .write()
