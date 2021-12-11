@@ -387,8 +387,8 @@ impl KvmContext {
             return Err(Error::KvmApiVersion(kvm.get_api_version()));
         }
 
-        check_cap(&kvm, Cap::Xsave)?;
-        check_cap(&kvm, Cap::Xcrs)?;
+        //check_cap(&kvm, Cap::Xsave)?;
+        //check_cap(&kvm, Cap::Xcrs)?;
         check_cap(&kvm, Cap::MpState)?;
         check_cap(&kvm, Cap::VcpuEvents)?;
         check_cap(&kvm, Cap::Irqchip)?;
