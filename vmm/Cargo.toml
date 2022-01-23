@@ -11,7 +11,7 @@ futures = ">=0.1.18"
 serde = ">=1.0.27"
 serde_derive = ">=1.0.27"
 serde_json = ">=1.0.9"
-time = ">=0.1.39"
+time = "0.1.43"
 timerfd = ">=1.0"
 byteorder = ">=1.2.1"
 kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
