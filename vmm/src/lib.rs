@@ -387,10 +387,10 @@ impl KvmContext {
             return Err(Error::KvmApiVersion(kvm.get_api_version()));
         }
 
-        check_cap(&kvm, Cap::Xsave)?;
-        check_cap(&kvm, Cap::Xcrs)?;
+        //check_cap(&kvm, Cap::Xsave)?;
+        //check_cap(&kvm, Cap::Xcrs)?;
         check_cap(&kvm, Cap::MpState)?;
-        check_cap(&kvm, Cap::VcpuEvents)?;
+        // check_cap(&kvm, Cap::VcpuEvents)?;
         check_cap(&kvm, Cap::Irqchip)?;
         check_cap(&kvm, Cap::Ioeventfd)?;
         check_cap(&kvm, Cap::Irqfd)?;
@@ -2060,6 +2060,7 @@ impl Vmm {
         &mut self,
         machine_config: VmConfig,
     ) -> std::result::Result<VmmData, VmmActionError> {
+
         if self.is_instance_initialized() {
             return Err(VmmActionError::MachineConfig(
                 ErrorKind::User,
@@ -2450,6 +2451,7 @@ impl Vmm {
     }
 
     fn run_vmm_action(&mut self) -> Result<()> {
+
         let request = match self.from_api.try_recv() {
             Ok(t) => *t,
             Err(TryRecvError::Empty) => {

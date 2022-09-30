@@ -20,10 +20,10 @@ use arch;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_sregs, kvm_msrs, kvm_msr_entry, kvm_irqchip, kvm_lapic_state,
-    kvm_mp_state, kvm_vcpu_events, kvm_xsave, kvm_xcrs,
-    KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
-    kvm_pic_state, kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1,
+use kvm_bindings::{ kvm_regs, kvm_irqchip,
+    kvm_mp_state, kvm_vcpu_events,
+    // KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, //we need to replace them with the correct 
+    kvm_hyperv_exit__bindgen_ty_1__bindgen_ty_1,
     kvm_pit_config, kvm_userspace_memory_region, KVM_PIT_SPEAKER_DUMMY};
 use logger::{LogOption, Metric, LOGGER, METRICS};
 use memory_model::{GuestAddress, GuestMemory, GuestMemoryError, MemorySnapshotMeta};
@@ -34,7 +34,7 @@ use vmm_config::machine_config::VmConfig;
 
 const KVM_MEM_LOG_DIRTY_PAGES: u32 = 0x1;
 
-const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x03f0;
+const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x04f0;
 const MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE: u8 = 123;
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -103,11 +103,11 @@ pub struct VcpuState {
     pub vcpu_events: kvm_vcpu_events,
     pub mp_state: kvm_mp_state,
     pub regs: kvm_regs,
-    pub xsave_region: Vec<std::os::raw::c_uint>,
-    pub xcrs: kvm_xcrs,
-    pub sregs: kvm_sregs,
-    pub msr_entries: Vec<kvm_msr_entry>,
-    pub lapic_regs: Vec<std::os::raw::c_char>,
+    // pub xsave_region: Vec<std::os::raw::c_uint>,
+    // pub xcrs: kvm_xcrs,
+    // pub sregs: kvm_sregs,
+    // pub msr_entries: Vec<kvm_msr_entry>,
+    // pub lapic_regs: Vec<std::os::raw::c_char>,
 }
 
 pub struct VcpuInfo {
@@ -122,7 +122,7 @@ pub struct IoapicState {
    pub id: u32,
    pub irr: u32,
    pub pad: u32,
-   pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
+   // pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -134,11 +134,11 @@ pub struct VirtioState {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
     /// IOAPIC
-    pub ioapic: IoapicState,
+    // pub ioapic: IoapicState,
     /// PIC master
-    pub pic_master: kvm_pic_state,
+    // pub pic_master: kvm_pic_state,
     /// PIC slave
-    pub pic_slave: kvm_pic_state,
+    // pub pic_slave: kvm_pic_state,
     /// Virtio block device
     pub block_states: Vec<VirtioState>,
     /// Virtio net device
@@ -151,37 +151,37 @@ pub struct Snapshot {
     pub memory_meta: MemorySnapshotMeta,
 }
 
-fn get_ioapic_state(vmfd: &VmFd) -> result::Result<IoapicState, io::Error> {
-    let mut irqchip = kvm_irqchip {
-        chip_id: KVM_IRQCHIP_IOAPIC,
-        ..Default::default()
-    };
-    vmfd.get_irqchip(&mut irqchip)?;
-    let kioapic = unsafe { irqchip.chip.ioapic };
-    let mut ioapic = IoapicState {
-        base_address: kioapic.base_address,
-        ioregsel: kioapic.ioregsel,
-        id: kioapic.id,
-        irr: kioapic.irr,
-        pad: kioapic.pad,
-        redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1::default(); 24usize],
-    };
-    unsafe {
-        for i in 0..24 {
-            ioapic.redirtbl[i] = kioapic.redirtbl[i].fields;
-        }
-    };
-    Ok(ioapic)
-}
+// fn get_ioapic_state(vmfd: &VmFd) -> result::Result<IoapicState, io::Error> {
+//     let mut irqchip = kvm_irqchip {
+//         chip_id: KVM_IRQCHIP_IOAPIC,
+//         ..Default::default()
+//     };
+//     vmfd.get_irqchip(&mut irqchip)?;
+//     let kioapic = unsafe { irqchip.chip.ioapic };
+//     let mut ioapic = IoapicState {
+//         base_address: kioapic.base_address,
+//         ioregsel: kioapic.ioregsel,
+//         id: kioapic.id,
+//         irr: kioapic.irr,
+//         pad: kioapic.pad,
+//         // redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1::default(); 24usize],
+//     };
+//     unsafe {
+//         for i in 0..24 {
+//             ioapic.redirtbl[i] = kioapic.redirtbl[i].fields;
+//         }
+//     };
+//     Ok(ioapic)
+// }
 
-fn get_pic_state(vmfd: &VmFd, master: bool) -> result::Result<kvm_pic_state, io::Error> {
-    let mut irqchip = kvm_irqchip {
-        chip_id: if master { KVM_IRQCHIP_PIC_MASTER } else { KVM_IRQCHIP_PIC_SLAVE },
-        ..Default::default()
-    };
-    vmfd.get_irqchip(&mut irqchip)?;
-    unsafe { Ok(irqchip.chip.pic) }
-}
+// fn get_pic_state(vmfd: &VmFd, master: bool) -> result::Result<kvm_pic_state, io::Error> {
+//     let mut irqchip = kvm_irqchip {
+//         chip_id: if master { KVM_IRQCHIP_PIC_MASTER } else { KVM_IRQCHIP_PIC_SLAVE },
+//         ..Default::default()
+//     };
+//     vmfd.get_irqchip(&mut irqchip)?;
+//     unsafe { Ok(irqchip.chip.pic) }
+// }
 
 /// A wrapper around creating and using a VM.
 pub struct Vm {
@@ -263,44 +263,45 @@ impl Vm {
         self.guest_mem.as_ref().unwrap().dump_working_set(dir, base_layer)
     }
 
-    fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
-        let mut irqchip = kvm_irqchip {
-            chip_id: KVM_IRQCHIP_IOAPIC,
-            ..Default::default()
-        };
-        let ioapic = &snapshot.ioapic;
-        unsafe {
-            irqchip.chip.ioapic.base_address = ioapic.base_address;
-            irqchip.chip.ioapic.ioregsel = ioapic.ioregsel;
-            irqchip.chip.ioapic.id = ioapic.id;
-            irqchip.chip.ioapic.irr = ioapic.irr;
-            irqchip.chip.ioapic.pad = ioapic.pad;
-            for i in 0..24 {
-                irqchip.chip.ioapic.redirtbl[i].fields = ioapic.redirtbl[i];
-            }
-        }
-        self.fd.set_irqchip(&irqchip)?;
+    // fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
+        
+        // let mut irqchip = kvm_irqchip {
+        //     chip_id: KVM_IRQCHIP_IOAPIC,
+        //     ..Default::default()
+        // };
+        // let ioapic = &snapshot.ioapic;
+        // unsafe {
+        //     irqchip.chip.ioapic.base_address = ioapic.base_address;
+        //     irqchip.chip.ioapic.ioregsel = ioapic.ioregsel;
+        //     irqchip.chip.ioapic.id = ioapic.id;
+        //     irqchip.chip.ioapic.irr = ioapic.irr;
+        //     irqchip.chip.ioapic.pad = ioapic.pad;
+        //     for i in 0..24 {
+        //         irqchip.chip.ioapic.redirtbl[i].fields = ioapic.redirtbl[i];
+        //     }
+        // }
+        // self.fd.set_irqchip(&irqchip)?;
 
-        irqchip = kvm_irqchip {
-            chip_id: KVM_IRQCHIP_PIC_MASTER,
-            ..Default::default()
-        };
-        irqchip.chip.pic = snapshot.pic_master;
-        self.fd.set_irqchip(&irqchip)?;
+        // irqchip = kvm_irqchip {
+        //     chip_id: KVM_IRQCHIP_PIC_MASTER,
+        //     ..Default::default()
+        // };
+        // // irqchip.chip.pic = snapshot.pic_master;
+        // self.fd.set_irqchip(&irqchip)?;
 
-        irqchip = kvm_irqchip {
-            chip_id: KVM_IRQCHIP_PIC_SLAVE,
-            ..Default::default()
-        };
-        irqchip.chip.pic = snapshot.pic_slave;
-        self.fd.set_irqchip(&irqchip)
-    }
+        // irqchip = kvm_irqchip {
+        //     chip_id: KVM_IRQCHIP_PIC_SLAVE,
+        //     ..Default::default()
+        // };
+        // irqchip.chip.pic = snapshot.pic_slave;
+        // self.fd.set_irqchip(&irqchip)
+    // }
 
     /// This function dumps irqchip's states
     pub fn dump_irqchip(&self, snapshot: &mut Snapshot) -> result::Result<(), io::Error> {
-        snapshot.ioapic = get_ioapic_state(&self.fd)?;
-        snapshot.pic_master = get_pic_state(&self.fd, true)?;
-        snapshot.pic_slave = get_pic_state(&self.fd, false)?;
+        // snapshot.ioapic = get_ioapic_state(&self.fd)?;
+        // snapshot.pic_master = get_pic_state(&self.fd, true)?;
+        // snapshot.pic_slave = get_pic_state(&self.fd, false)?;
 
         Ok(())
     }
@@ -316,11 +317,12 @@ impl Vm {
         self.fd.create_irq_chip().map_err(Error::VmSetup)?;
         if let Some(snapshot) = maybe_snapshot {
             let start = now_monotime_us();
-            self.load_irqchip(snapshot).map_err(|e| Error::LoadSnapshot(e))?;
+            // self.load_irqchip(snapshot).map_err(|e| Error::LoadSnapshot(e))?;
             let end = now_monotime_us();
             info!("restoring irqchip took {}us", end-start);
         }
 
+        // the interrupt events
         self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
         self.fd.register_irqfd(com_evt_2_4, 3).map_err(Error::Irq)?;
         self.fd.register_irqfd(kbd_evt, 1).map_err(Error::Irq)?;
@@ -395,92 +397,93 @@ impl Vcpu {
         })
     }
 
-    fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
-        let mut entry_vec = arch::x86_64::regs::create_msr_entries();
-        entry_vec.push(arch::x86_64::regs::create_msr_tscdeadline());
-        let vec_size_bytes =
-            std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
-        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
-        #[allow(clippy::cast_ptr_alignment)]
-        let msrs: &mut kvm_msrs = unsafe {
-            &mut *(vec.as_ptr() as *mut kvm_msrs)
-        };
+    // fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
+    //     let mut entry_vec = arch::x86_64::regs::create_msr_entries();
+    //     entry_vec.push(arch::x86_64::regs::create_msr_tscdeadline());
+    //     let vec_size_bytes =
+    //         std::mem::size_of::<kvm_msrs>() + (entry_vec.len() * std::mem::size_of::<kvm_msr_entry>());
+    //     let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
+    //     #[allow(clippy::cast_ptr_alignment)]
+    //     let msrs: &mut kvm_msrs = unsafe {
+    //         &mut *(vec.as_ptr() as *mut kvm_msrs)
+    //     };
 
-        unsafe {
-            let entries: &mut [kvm_msr_entry] = msrs.entries.as_mut_slice(entry_vec.len());
-            entries.copy_from_slice(&entry_vec);
-        }
-        msrs.nmsrs = entry_vec.len() as u32;
-        self.fd.get_msrs(msrs)?;
+    //     unsafe {
+    //         let entries: &mut [kvm_msr_entry] = msrs.entries.as_mut_slice(entry_vec.len());
+    //         entries.copy_from_slice(&entry_vec);
+    //     }
+    //     msrs.nmsrs = entry_vec.len() as u32;
+    //     self.fd.get_msrs(msrs)?;
 
-        unsafe {
-            let entries: Vec<kvm_msr_entry> = msrs.entries.as_slice(entry_vec.len()).to_vec();
-            vcpu_state.msr_entries = entries;
-        }
+    //     unsafe {
+    //         let entries: Vec<kvm_msr_entry> = msrs.entries.as_slice(entry_vec.len()).to_vec();
+    //         vcpu_state.msr_entries = entries;
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    fn set_msrs(&self, vcpu_state: &VcpuState) -> result::Result<(), std::io::Error> {
-        let entries = &vcpu_state.msr_entries;
+    // fn set_msrs(&self, vcpu_state: &VcpuState) -> result::Result<(), std::io::Error> {
+    //     let entries = &vcpu_state.msr_entries;
 
-        // do not restore MSR_IA32_TSCDEADLINE here so always entries.len() - 1
-        let vec_size_bytes =
-            std::mem::size_of::<kvm_msrs>() + ((entries.len()-1) * std::mem::size_of::<kvm_msr_entry>());
-        let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
-        #[allow(clippy::cast_ptr_alignment)]
-        let msrs: &mut kvm_msrs = unsafe {
-            &mut *(vec.as_ptr() as *mut kvm_msrs)
-        };
+    //     // do not restore MSR_IA32_TSCDEADLINE here so always entries.len() - 1
+    //     let vec_size_bytes =
+    //         std::mem::size_of::<kvm_msrs>() + ((entries.len()-1) * std::mem::size_of::<kvm_msr_entry>());
+    //     let vec: Vec<u8> = Vec::with_capacity(vec_size_bytes);
+    //     #[allow(clippy::cast_ptr_alignment)]
+    //     let msrs: &mut kvm_msrs = unsafe {
+    //         &mut *(vec.as_ptr() as *mut kvm_msrs)
+    //     };
 
-        unsafe {
-            msrs.entries.as_mut_slice(entries.len()-1).copy_from_slice(&entries[..entries.len()-1]);
-        }
-        msrs.nmsrs = entries.len() as u32 - 1;
-        self.fd.set_msrs(msrs)
-    }
+    //     unsafe {
+    //         msrs.entries.as_mut_slice(entries.len()-1).copy_from_slice(&entries[..entries.len()-1]);
+    //     }
+    //     msrs.nmsrs = entries.len() as u32 - 1;
+    //     self.fd.set_msrs(msrs)
+    // }
 
     fn load_vcpu_state(&self, vcpu_state: &VcpuState) -> result::Result<(), io::Error> {
+
         self.fd.set_regs(&vcpu_state.regs)?;
 
-        let region_vec = &vcpu_state.xsave_region;
-        let mut region = [0 as std::os::raw::c_uint; 1024usize];
-        for idx in 0..region.len() {
-            region[idx] = region_vec[idx];
-        }
-        let xsave = kvm_xsave{ region };
-        self.fd.set_xsave(&xsave)?;
+        // let region_vec = &vcpu_state.xsave_region;
+        // let mut region = [0 as std::os::raw::c_uint; 1024usize];
+        // for idx in 0..region.len() {
+            // region[idx] = region_vec[idx];
+        // }
+        // let xsave = kvm_xsave{ region };
+        // self.fd.set_xsave(&xsave)?;
 
-        self.fd.set_xcrs(&vcpu_state.xcrs)?;
+        // self.fd.set_xcrs(&vcpu_state.xcrs)?;
 
-        self.fd.set_sregs(&vcpu_state.sregs)?;
+        // self.fd.set_sregs(&vcpu_state.sregs)?;
 
-        let regs_vec = &vcpu_state.lapic_regs;
+        // let regs_vec = &vcpu_state.lapic_regs;
         // from kvm api documentation, KVM_APIC_REG_SIZE = 0x400/1024
-        let mut regs = [0 as std::os::raw::c_char; 1024usize];
-        for (idx, _) in regs_vec.iter().enumerate() {
-            regs[idx] = regs_vec[idx];
-        }
+        // let mut regs = [0 as std::os::raw::c_char; 1024usize];
+        // for (idx, _) in regs_vec.iter().enumerate() {
+            // regs[idx] = regs_vec[idx];
+        // }
 
-        self.set_msrs(vcpu_state)?;
+        // self.set_msrs(vcpu_state)?;
 
-        let lapic = kvm_lapic_state { regs };
-        self.fd.set_lapic(&lapic)?;
+        // let lapic = kvm_lapic_state { regs };
+        // self.fd.set_lapic(&lapic)?;
 
         // this must be after lapic is restored
         // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
-        let tscdeadline_entry = vcpu_state.msr_entries[vcpu_state.msr_entries.len()-1];
-        let vec: Vec<u8> = Vec::with_capacity(std::mem::size_of::<kvm_msr_entry>());
-        #[allow(clippy::cast_ptr_alignment)]
-        let msrs: &mut kvm_msrs = unsafe {
-            &mut *(vec.as_ptr() as *mut kvm_msrs)
-        };
+        // let tscdeadline_entry = vcpu_state.msr_entries[vcpu_state.msr_entries.len()-1];
+        // let vec: Vec<u8> = Vec::with_capacity(std::mem::size_of::<kvm_msr_entry>());
+        // #[allow(clippy::cast_ptr_alignment)]
+        // let msrs: &mut kvm_msrs = unsafe {
+            // &mut *(vec.as_ptr() as *mut kvm_msrs)
+        // };
 
-        unsafe {
-            msrs.entries.as_mut_slice(1).copy_from_slice(&[tscdeadline_entry]);
-        }
-        msrs.nmsrs = 1;
-        self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
+        // unsafe {
+            // msrs.entries.as_mut_slice(1).copy_from_slice(&[tscdeadline_entry]);
+        // }
+        // msrs.nmsrs = 1;
+        // self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
 
         self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
 
@@ -496,17 +499,17 @@ impl Vcpu {
 
         vcpu_state.regs = self.fd.get_regs()?;
 
-        let xsave = self.fd.get_xsave()?;
-        vcpu_state.xsave_region = xsave.region.to_vec();
+        // let xsave = self.fd.get_xsave()?;
+        // vcpu_state.xsave_region = xsave.region.to_vec();
 
-        vcpu_state.xcrs = self.fd.get_xcrs()?;
+        // vcpu_state.xcrs = self.fd.get_xcrs()?;
 
-        vcpu_state.sregs = self.fd.get_sregs()?;
+        // vcpu_state.sregs = self.fd.get_sregs()?;
 
-        self.get_msrs(vcpu_state)?;
+        // self.get_msrs(vcpu_state)?;
 
-        let lapic = self.fd.get_lapic()?;
-        vcpu_state.lapic_regs = lapic.regs.to_vec();
+        // let lapic = self.fd.get_lapic()?;
+        // vcpu_state.lapic_regs = lapic.regs.to_vec();
 
         Ok(())
     }

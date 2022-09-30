@@ -674,45 +674,45 @@ pub struct VcpuFd {
 
 impl VcpuFd {
     /// KVM_GET_XSAVE
-    pub fn get_xsave(&self) -> Result<kvm_xsave> {
-        let mut xsave = kvm_xsave::default(); 
+    // pub fn get_xsave(&self) -> Result<kvm_xsave> {
+    //     let mut xsave = kvm_xsave::default(); 
 
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_XSAVE(), &mut xsave) };
-        if ret == 0 {
-            Ok(xsave)
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+    //     let ret = unsafe { ioctl_with_ref(self, KVM_GET_XSAVE(), &mut xsave) };
+    //     if ret == 0 {
+    //         Ok(xsave)
+    //     } else {
+    //         Err(io::Error::last_os_error())
+    //     }
+    // }
     /// KVM_SET_XSAVE
-    pub fn set_xsave(&self, xsave: &kvm_xsave) -> Result<()> {
-        let ret = unsafe { ioctl_with_ref(self, KVM_SET_XSAVE(), xsave) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+    // pub fn set_xsave(&self, xsave: &kvm_xsave) -> Result<()> {
+    //     let ret = unsafe { ioctl_with_ref(self, KVM_SET_XSAVE(), xsave) };
+    //     if ret == 0 {
+    //         Ok(())
+    //     } else {
+    //         Err(io::Error::last_os_error())
+    //     }
+    // }
     /// KVM_GET_XCRS
-    pub fn get_xcrs(&self) -> Result<kvm_xcrs> {
-        let mut xcrs = kvm_xcrs::default(); 
+    // pub fn get_xcrs(&self) -> Result<kvm_xcrs> {
+    //     let mut xcrs = kvm_xcrs::default(); 
 
-        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_XCRS(), &mut xcrs) };
-        if ret == 0 {
-            Ok(xcrs)
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+    //     let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_XCRS(), &mut xcrs) };
+    //     if ret == 0 {
+    //         Ok(xcrs)
+    //     } else {
+    //         Err(io::Error::last_os_error())
+    //     }
+    // }
     /// KVM_SET_XCRS
-    pub fn set_xcrs(&self, xcrs: &kvm_xcrs) -> Result<()> {
-        let ret = unsafe { ioctl_with_ref(self, KVM_SET_XCRS(), xcrs) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
+    // pub fn set_xcrs(&self, xcrs: &kvm_xcrs) -> Result<()> {
+    //     let ret = unsafe { ioctl_with_ref(self, KVM_SET_XCRS(), xcrs) };
+    //     if ret == 0 {
+    //         Ok(())
+    //     } else {
+    //         Err(io::Error::last_os_error())
+    //     }
+    // }
     /// KVM_GET_MP_STATE
     pub fn get_mp_state(&self) -> Result<kvm_mp_state> {
         let mut mp_state = kvm_mp_state::default();
@@ -756,7 +756,7 @@ impl VcpuFd {
 
     /// Gets the VCPU registers using the `KVM_GET_REGS` ioctl.
     ///
-    #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    // #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     pub fn get_regs(&self) -> Result<kvm_regs> {
         // Safe because we know that our file is a VCPU fd, we know the kernel will only read the
         // correct amount of memory from our pointer, and we verify the return result.
@@ -774,7 +774,7 @@ impl VcpuFd {
     ///
     /// * `regs` - Registers being set.
     ///
-    #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    // #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     pub fn set_regs(&self, regs: &kvm_regs) -> Result<()> {
         // Safe because we know that our file is a VCPU fd, we know the kernel will only read the
         // correct amount of memory from our pointer, and we verify the return result.
