@@ -75,79 +75,82 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// * `start_address` - For x86_64, this is the start of the high memory. Kernel should reside above it.
 ///
 /// Returns the entry address of the kernel.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn load_kernel<F>(
-    guest_mem: &GuestMemory,
-    kernel_image: &mut F,
-    start_address: usize,
-) -> Result<GuestAddress>
-where
-    F: Read + Seek,
-{
-    let mut ehdr: elf::Elf64_Ehdr = Default::default();
-    kernel_image
-        .seek(SeekFrom::Start(0))
-        .map_err(|_| Error::SeekKernelImage)?;
-    unsafe {
-        // read_struct is safe when reading a POD struct.  It can be used and dropped without issue.
-        sys_util::read_struct(kernel_image, &mut ehdr).map_err(|_| Error::ReadElfHeader)?;
-    }
+/// 
+/// 
+/// 
+// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+// pub fn load_kernel<F>(
+//     guest_mem: &GuestMemory,
+//     kernel_image: &mut F,
+//     start_address: usize,
+// ) -> Result<GuestAddress>
+// where
+//     F: Read + Seek,
+// {
+//     let mut ehdr: elf::Elf64_Ehdr = Default::default();
+//     kernel_image
+//         .seek(SeekFrom::Start(0))
+//         .map_err(|_| Error::SeekKernelImage)?;
+//     unsafe {
+//         // read_struct is safe when reading a POD struct.  It can be used and dropped without issue.
+//         sys_util::read_struct(kernel_image, &mut ehdr).map_err(|_| Error::ReadElfHeader)?;
+//     }
 
-    // Sanity checks
-    if ehdr.e_ident[elf::EI_MAG0 as usize] != elf::ELFMAG0 as u8
-        || ehdr.e_ident[elf::EI_MAG1 as usize] != elf::ELFMAG1
-        || ehdr.e_ident[elf::EI_MAG2 as usize] != elf::ELFMAG2
-        || ehdr.e_ident[elf::EI_MAG3 as usize] != elf::ELFMAG3
-    {
-        return Err(Error::InvalidElfMagicNumber);
-    }
-    if ehdr.e_ident[elf::EI_DATA as usize] != elf::ELFDATA2LSB as u8 {
-        return Err(Error::BigEndianElfOnLittle);
-    }
-    if ehdr.e_phentsize as usize != mem::size_of::<elf::Elf64_Phdr>() {
-        return Err(Error::InvalidProgramHeaderSize);
-    }
-    if (ehdr.e_phoff as usize) < mem::size_of::<elf::Elf64_Ehdr>() {
-        // If the program header is backwards, bail.
-        return Err(Error::InvalidProgramHeaderOffset);
-    }
-    if (ehdr.e_entry as usize) < start_address {
-        return Err(Error::InvalidEntryAddress);
-    }
+//     // Sanity checks
+//     if ehdr.e_ident[elf::EI_MAG0 as usize] != elf::ELFMAG0 as u8
+//         || ehdr.e_ident[elf::EI_MAG1 as usize] != elf::ELFMAG1
+//         || ehdr.e_ident[elf::EI_MAG2 as usize] != elf::ELFMAG2
+//         || ehdr.e_ident[elf::EI_MAG3 as usize] != elf::ELFMAG3
+//     {
+//         return Err(Error::InvalidElfMagicNumber);
+//     }
+//     if ehdr.e_ident[elf::EI_DATA as usize] != elf::ELFDATA2LSB as u8 {
+//         return Err(Error::BigEndianElfOnLittle);
+//     }
+//     if ehdr.e_phentsize as usize != mem::size_of::<elf::Elf64_Phdr>() {
+//         return Err(Error::InvalidProgramHeaderSize);
+//     }
+//     if (ehdr.e_phoff as usize) < mem::size_of::<elf::Elf64_Ehdr>() {
+//         // If the program header is backwards, bail.
+//         return Err(Error::InvalidProgramHeaderOffset);
+//     }
+//     if (ehdr.e_entry as usize) < start_address {
+//         return Err(Error::InvalidEntryAddress);
+//     }
 
-    kernel_image
-        .seek(SeekFrom::Start(ehdr.e_phoff))
-        .map_err(|_| Error::SeekProgramHeader)?;
-    let phdrs: Vec<elf::Elf64_Phdr> = unsafe {
-        // Reading the structs is safe for a slice of POD structs.
-        sys_util::read_struct_slice(kernel_image, ehdr.e_phnum as usize)
-            .map_err(|_| Error::ReadProgramHeader)?
-    };
+//     kernel_image
+//         .seek(SeekFrom::Start(ehdr.e_phoff))
+//         .map_err(|_| Error::SeekProgramHeader)?;
+//     let phdrs: Vec<elf::Elf64_Phdr> = unsafe {
+//         // Reading the structs is safe for a slice of POD structs.
+//         sys_util::read_struct_slice(kernel_image, ehdr.e_phnum as usize)
+//             .map_err(|_| Error::ReadProgramHeader)?
+//     };
 
-    // Read in each section pointed to by the program headers.
-    for phdr in &phdrs {
-        if (phdr.p_type & elf::PT_LOAD) == 0 || phdr.p_filesz == 0 {
-            continue;
-        }
+//     // Read in each section pointed to by the program headers.
+//     for phdr in &phdrs {
+//         if (phdr.p_type & elf::PT_LOAD) == 0 || phdr.p_filesz == 0 {
+//             continue;
+//         }
 
-        kernel_image
-            .seek(SeekFrom::Start(phdr.p_offset))
-            .map_err(|_| Error::SeekKernelStart)?;
+//         kernel_image
+//             .seek(SeekFrom::Start(phdr.p_offset))
+//             .map_err(|_| Error::SeekKernelStart)?;
 
-        let mem_offset = GuestAddress(phdr.p_paddr as usize);
-        if mem_offset.offset() < start_address {
-            return Err(Error::InvalidProgramHeaderAddress);
-        }
+//         let mem_offset = GuestAddress(phdr.p_paddr as usize);
+//         if mem_offset.offset() < start_address {
+//             return Err(Error::InvalidProgramHeaderAddress);
+//         }
 
-        guest_mem
-            .read_to_memory(mem_offset, kernel_image, phdr.p_filesz as usize)
-            .map_err(|_| Error::ReadKernelImage)?;
-    }
+//         guest_mem
+//             .read_to_memory(mem_offset, kernel_image, phdr.p_filesz as usize)
+//             .map_err(|_| Error::ReadKernelImage)?;
+//     }
 
-    Ok(GuestAddress(ehdr.e_entry as usize))
-}
+//     Ok(GuestAddress(ehdr.e_entry as usize))
+// }
 
-#[cfg(target_arch = "aarch64")]
+// #[cfg(target_arch = "aarch64")]
 pub fn load_kernel<F>(
     guest_mem: &GuestMemory,
     kernel_image: &mut F,

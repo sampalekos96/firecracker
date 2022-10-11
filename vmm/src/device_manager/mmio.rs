@@ -5,6 +5,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+extern crate versionize;
+extern crate versionize_derive;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
@@ -13,6 +16,10 @@ use devices;
 use kernel_cmdline;
 use kvm::{IoeventAddress, VmFd};
 use memory_model::GuestMemory;
+use self::versionize::{VersionMap, Versionize, VersionizeResult};
+use self::versionize_derive::Versionize;
+// use versionize_derive::Versionize;
+use arch::aarch64::DeviceInfoForFDT;
 
 /// Errors for MMIO device manager.
 #[derive(Debug)]
@@ -61,14 +68,46 @@ const MMIO_LEN: u64 = 0x1000;
 /// to its configuration space.
 const MMIO_CFG_SPACE_OFF: u64 = 0x100;
 
+#[derive(Clone, Debug, PartialEq, Versionize)]
+pub struct MMIODeviceInfo {
+    /// Mmio address at which the device is registered.
+    pub addr: u64,
+    /// Mmio addr range length.
+    pub len: u64,
+    /// Used Irq line(s) for the device.
+    pub irqs: u32,
+}
+
+// pub trait DeviceInfoForFDT {
+//     /// Returns the address where this device will be loaded.
+//     fn addr(&self) -> u64;
+//     /// Returns the associated interrupt for this device.
+//     fn irq(&self) -> u32;
+//     /// Returns the amount of memory that needs to be reserved for this device.
+//     fn length(&self) -> u64;
+// }
+
+impl DeviceInfoForFDT for MMIODeviceInfo {
+    fn addr(&self) -> u64 {
+        self.addr
+    }
+    fn irq(&self) -> u32 {
+        self.irqs
+    }
+    fn length(&self) -> u64 {
+        self.len
+    }
+}
+
 /// Manages the complexities of registering a MMIO device.
+#[derive(Clone)]
 pub struct MMIODeviceManager {
     pub bus: devices::Bus,
     guest_mem: GuestMemory,
     mmio_base: u64,
     irq: u32,
     last_irq: u32,
-    id_to_addr_map: HashMap<String, u64>,
+    id_to_addr_map: HashMap<String, MMIODeviceInfo>,
 }
 
 impl MMIODeviceManager {
@@ -86,6 +125,11 @@ impl MMIODeviceManager {
             bus: devices::Bus::new(),
             id_to_addr_map: HashMap::new(),
         }
+    }
+
+    /// Gets the information of the devices registered up to some point in time.
+    pub fn get_device_info(&self) -> &HashMap<String, MMIODeviceInfo> {
+        &self.id_to_addr_map
     }
 
     /// Register a device to be used via MMIO transport.
@@ -125,23 +169,36 @@ impl MMIODeviceManager {
         // the size parameter has to be transformed to KiB, so dividing hexadecimal value in
         // bytes to 1024; further, the '{}' formatting rust construct will automatically
         // transform it to decimal
-        if let Some(cmdline) = cmdline {
-            cmdline
-                .insert(
-                    "virtio_mmio.device",
-                    &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
-                )
-                .map_err(Error::Cmdline)?;
+
+        //We won't add virtio device to cmdline
+
+        // if let Some(cmdline) = cmdline {
+            // cmdline
+                // .insert(
+                    // "virtio_mmio.device",
+                    // &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
+                // )
+                // .map_err(Error::Cmdline)?;
+        // }
+        let _addr = self.mmio_base;
+        let _irqs = self.irq;
+        // self.mmio_base += MMIO_LEN;
+        // self.irq += 1;
+        let temp = MMIODeviceInfo {addr: _addr, len: MMIO_LEN, irqs: _irqs};
+
+        // if let Some(ref device_id) = id {
+        //     println!("TO DEVICE TYPE:");
+        //     println!("{}", device_id);
+        // }
+
+        if let Some(device_id) = id {
+            self.id_to_addr_map.insert(device_id.clone(), temp);
         }
-        let ret = self.mmio_base;
+
         self.mmio_base += MMIO_LEN;
         self.irq += 1;
 
-        if let Some(device_id) = id {
-            self.id_to_addr_map.insert(device_id.clone(), ret);
-        }
-
-        Ok(ret)
+        Ok(_addr)
     }
 
     /// Update a drive by rebuilding its config space and rewriting it on the bus.
@@ -160,8 +217,15 @@ impl MMIODeviceManager {
     }
 
     /// Gets the address of the specified device on the bus.
-    pub fn get_address(&self, id: &str) -> Option<&u64> {
-        self.id_to_addr_map.get(id)
+    pub fn get_address(&self, id: &str) -> Option<u64> {
+        let null_val: &str = " ";
+        if id.eq(null_val) {
+            return None
+        }
+        else {
+            Some(self.id_to_addr_map.get(id)?.addr())
+        }
+        // temp?.addr()
     }
 
     /// Removing the address of a device will generate an error when you try to update the

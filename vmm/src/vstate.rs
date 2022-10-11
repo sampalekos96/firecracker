@@ -14,8 +14,15 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::collections::BTreeSet;
 
+use MMIODeviceManager;
+
+use std::convert::TryInto;
+
 use super::{KvmContext, TimestampUs};
 use arch;
+use arch::aarch64::gic::GICDevice;
+use arch::aarch64::fdt::DeviceInfoForFDT;
+
 #[cfg(target_arch = "x86_64")]
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
@@ -59,6 +66,8 @@ pub enum Error {
     VcpuRun(io::Error),
     /// The call to KVM_SET_CPUID2 failed.
     SetSupportedCpusFailed(io::Error),
+    /// Cannot create the global interrupt controller..
+    VmCreateGIC(arch::aarch64::gic::Error),
     /// The number of configured slots is bigger than the maximum reported by KVM.
     NotEnoughMemorySlots,
     #[cfg(target_arch = "x86_64")]
@@ -89,6 +98,8 @@ pub enum Error {
     GetDirtyLog(io::Error),
     /// Error restoring all vcpu states
     LoadSnapshot(io::Error),
+    /// Error configuring registers
+    ConfigureRegisters(io::Error),
 }
 pub type Result<T> = result::Result<T, Error>;
 
@@ -185,9 +196,11 @@ pub struct Snapshot {
 
 /// A wrapper around creating and using a VM.
 pub struct Vm {
-    fd: VmFd,
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    supported_cpuid: CpuId,
+    pub fd: VmFd,
+    // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // supported_cpuid: CpuId,
+    // #[cfg(any(target_arch = "aarch64"))]
+    irqchip_handle: Option<Box<dyn GICDevice>>,
     guest_mem: Option<GuestMemory>,
 }
 
@@ -196,17 +209,72 @@ impl Vm {
     pub fn new(kvm: &Kvm) -> Result<Self> {
         //create fd for interacting with kvm-vm specific functions
         let vm_fd = kvm.create_vm().map_err(Error::VmFd)?;
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        let cpuid = kvm
-            .get_supported_cpuid(MAX_KVM_CPUID_ENTRIES)
-            .map_err(Error::VmFd)?;
+        // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        // let cpuid = kvm
+            // .get_supported_cpuid(MAX_KVM_CPUID_ENTRIES)
+            // .map_err(Error::VmFd)?;
         Ok(Vm {
             fd: vm_fd,
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            supported_cpuid: cpuid,
+            // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            // supported_cpuid: cpuid,
+            irqchip_handle: None,
             guest_mem: None,
         })
     }
+
+
+
+
+
+    /// Stub function that needs to be implemented when aarch64 functionality is added.
+    pub fn configure_aarch64(
+        &self,
+        _guest_mem: &GuestMemory,
+        _vcpus: &mut [Vcpu],
+        _entry_addr: GuestAddress,
+        _mmio_device: &MMIODeviceManager,
+    ) -> super::Result<()> {
+
+        for vcpu in _vcpus.iter_mut() {
+            // vcpu.fd
+                // .configure(...)
+            arch::aarch64::regs::setup_boot_regs(
+                &vcpu.fd,
+                0,
+                _entry_addr.offset().try_into().unwrap(),
+                _guest_mem,
+            ).unwrap();
+            // .map_err(Error::ConfigureRegisters)?;
+
+            vcpu.mpidr =
+                arch::aarch64::regs::read_mpidr(&vcpu.fd).unwrap();
+                // .map_err(io::Error::last_os_error())?;
+        }
+
+        let mut vcpus_mpidr = Vec::new();
+
+        for vcpu in _vcpus.iter_mut() {
+
+            let vcpu_mpidr = vcpu.get_mpidr();
+
+            vcpus_mpidr.push(vcpu_mpidr);
+            
+        }
+
+        arch::aarch64::configure_system(
+            _guest_mem,
+            vcpus_mpidr,
+            _mmio_device.get_device_info(),
+            self.get_irqchip(),
+        ).unwrap();
+
+        Ok(())
+    }
+
+
+
+
+
 
     /// Returns a clone of the supported `CpuId` for this Vm.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -306,26 +374,37 @@ impl Vm {
         Ok(())
     }
 
+
+    pub fn get_irqchip(&self) -> &dyn GICDevice {
+        self.irqchip_handle
+            .as_ref()
+            .expect("IRQ chip not set")
+            .as_ref()
+    }
+
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
-        &self,
-        com_evt_1_3: &EventFd,
-        com_evt_2_4: &EventFd,
-        kbd_evt: &EventFd,
+        &mut self,
+        vcpu_count: u8,
         maybe_snapshot: Option<&Snapshot>,
     ) -> Result<()> {
-        self.fd.create_irq_chip().map_err(Error::VmSetup)?;
+
+        // println!("Bika setup_irqchip");
+        println!("Prin tin create_gic");
+
+        self.irqchip_handle = Some(
+            arch::aarch64::gic::create_gic(&self.fd, vcpu_count.into(), None)
+                .map_err(Error::VmCreateGIC)?,
+        );
+
+        println!("Meta tin create_gic");
+
         if let Some(snapshot) = maybe_snapshot {
             let start = now_monotime_us();
             // self.load_irqchip(snapshot).map_err(|e| Error::LoadSnapshot(e))?;
             let end = now_monotime_us();
             info!("restoring irqchip took {}us", end-start);
         }
-
-        // the interrupt events
-        self.fd.register_irqfd(com_evt_1_3, 4).map_err(Error::Irq)?;
-        self.fd.register_irqfd(com_evt_2_4, 3).map_err(Error::Irq)?;
-        self.fd.register_irqfd(kbd_evt, 1).map_err(Error::Irq)?;
 
         Ok(())
     }
@@ -358,12 +437,13 @@ impl Vm {
 
 /// A wrapper around creating and using a kvm-based VCPU.
 pub struct Vcpu {
-    #[cfg(target_arch = "x86_64")]
-    cpuid: CpuId,
-    fd: VcpuFd,
+    // #[cfg(target_arch = "x86_64")]
+    // cpuid: CpuId,
+    pub fd: VcpuFd,
     id: u8,
-    io_bus: devices::Bus,
+    // io_bus: devices::Bus,
     mmio_bus: devices::Bus,
+    mpidr: u64,
     create_ts: TimestampUs,
     ts_126: Vec<TimestampUs>,
 }
@@ -378,24 +458,36 @@ impl Vcpu {
     pub fn new(
         id: u8,
         vm: &Vm,
-        io_bus: devices::Bus,
+        // io_bus: devices::Bus,
         mmio_bus: devices::Bus,
+        mpidr: u64,
         create_ts: TimestampUs,
     ) -> Result<Self> {
         let kvm_vcpu = vm.fd.create_vcpu(id).map_err(Error::VcpuFd)?;
 
         // Initially the cpuid per vCPU is the one supported by this VM.
         Ok(Vcpu {
-            #[cfg(target_arch = "x86_64")]
-            cpuid: vm.get_supported_cpuid(),
+            // #[cfg(target_arch = "x86_64")]
+            // cpuid: vm.get_supported_cpuid(),
             fd: kvm_vcpu,
             id,
-            io_bus,
+            // io_bus,
             mmio_bus,
+            mpidr,
             create_ts,
             ts_126: Vec::new(),
         })
     }
+
+    pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
+        self.mmio_bus = mmio_bus;
+    }
+
+
+    pub fn get_mpidr(&self) -> u64 {
+        self.mpidr
+    }
+
 
     // fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
     //     let mut entry_vec = arch::x86_64::regs::create_msr_entries();
@@ -577,15 +669,17 @@ impl Vcpu {
                      snap_sender: &Option<Sender<VcpuInfo>>,
                      //from_snapshot: bool,
                      ) -> Result<()> {
-        //println!("running");
+        println!("running");
         match self.fd.run() {
             Ok(run) => match run {
-                VcpuExit::IoIn(addr, data) => {
-                    assert_eq!(1, data.len());
-                    self.io_bus.read(u64::from(addr), data);
-                    METRICS.vcpu.exit_io_in.inc();
-                    Ok(())
-                }
+
+                // VcpuExit::IoIn(addr, data) => {
+                //     assert_eq!(1, data.len());
+                //     self.io_bus.read(u64::from(addr), data);
+                //     METRICS.vcpu.exit_io_in.inc();
+                //     Ok(())
+                // }
+
                 VcpuExit::IoOut(addr, data) => {
                     if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
                         && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
@@ -621,7 +715,9 @@ impl Vcpu {
                         //return Err(Error::VcpuUnhandledKvmExit)
                     }
 
-                    self.io_bus.write(u64::from(addr), data);
+                    // self.io_bus.write(u64::from(addr), data);
+
+
                     METRICS.vcpu.exit_io_out.inc();
                     Ok(())
                 }

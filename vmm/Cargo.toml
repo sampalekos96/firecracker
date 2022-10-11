@@ -14,6 +14,8 @@ serde_json = ">=1.0.9"
 time = "0.1.43"
 timerfd = ">=1.0"
 byteorder = ">=1.2.1"
+versionize = "0.1.6"
+versionize_derive = "0.1.4"
 kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
 
 arch = { path = "../arch" }

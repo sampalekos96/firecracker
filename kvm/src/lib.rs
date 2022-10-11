@@ -25,6 +25,7 @@ use std::os::raw::*;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::ptr::null_mut;
 use std::result;
+// use std::error::Error;
 
 use libc::{open, EINVAL, O_CLOEXEC, O_RDWR};
 
@@ -343,6 +344,27 @@ impl VmFd {
     pub fn get_run_size(&self) -> usize {
         self.run_size
     }
+
+    pub fn create_device(&self, device: &mut kvm_create_device) -> Result<DeviceFd> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_CREATE_DEVICE(), device) };
+        if ret == 0 {
+            Ok(new_device(unsafe { File::from_raw_fd(device.fd as i32) }))
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    // KVM_ARM_PREFERRED_TARGET
+    pub fn get_preferred_target(&self, kvi: &mut kvm_vcpu_init) -> Result<()> {
+        // The ioctl is safe because we allocated the struct and we know the
+        // kernel will write exactly the size of the struct.
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_ARM_PREFERRED_TARGET(), kvi) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
 
     /// KVM_INTERRUPT
     pub fn interrupt(&self) -> Result<()> {
@@ -666,6 +688,23 @@ pub enum VcpuExit<'a> {
     Hyperv,
 }
 
+
+#[derive(Debug)]
+pub enum Error {
+    /// Error configuring the general purpose aarch64 registers.
+    ConfigureRegisters(io::Error),
+    /// Cannot open the kvm related file descriptor.
+    CreateFd(io::Error),
+    /// Error getting the Vcpu preferred target on Arm.
+    GetPreferredTarget(io::Error),
+    /// Error doing Vcpu Init on Arm.
+    Init(io::Error),
+    /// Failed to set value for some arm specific register.
+    RestoreState(io::Error),
+    /// Failed to fetch value for some arm specific register.
+    SaveState(io::Error),
+}
+
 /// A wrapper around creating and using a kvm related VCPU fd
 pub struct VcpuFd {
     vcpu: File,
@@ -673,6 +712,113 @@ pub struct VcpuFd {
 }
 
 impl VcpuFd {
+
+
+
+    /// Configures an aarch64 specific vcpu for booting Linux.
+    ///
+    /// # Arguments
+    ///
+    /// * `guest_mem` - The guest memory used by this microvm.
+    /// * `kernel_load_addr` - Offset from `guest_mem` at which the kernel is loaded.
+
+
+    // pub fn configure(
+    //     &mut self,
+    //     guest_mem: &GuestMemoryMmap,
+    //     kernel_load_addr: GuestAddress,
+    // ) -> std::result::Result<(), KvmVcpuConfigureError> {
+    //     arch::aarch64::regs::setup_boot_regs(
+    //         &self.fd,
+    //         self.index,
+    //         kernel_load_addr.raw_value(),
+    //         guest_mem,
+    //     )
+    //     .map_err(Error::ConfigureRegisters)?;
+
+    //     self.mpidr =
+    //         arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::ConfigureRegisters)?;
+
+    //     Ok(())
+    // }
+
+
+
+
+
+
+    /// Initializes an aarch64 specific vcpu for booting Linux.
+    ///
+    /// # Arguments
+    ///
+    /// * `vm_fd` - The kvm `VmFd` for this microvm.
+    pub fn init(&self, vm_fd: &VmFd) -> Result<()> {
+        let mut kvi: kvm_bindings::kvm_vcpu_init = kvm_bindings::kvm_vcpu_init::default();
+
+        // This reads back the kernel's preferred target type.
+
+        // vm_fd
+            // .get_preferred_target(&mut kvi)
+            // .map_err(io::Error::last_os_error())?;
+
+        vm_fd.get_preferred_target(&mut kvi).unwrap();
+
+        // We already checked that the capability is supported.
+        kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_PSCI_0_2;
+        // Non-boot cpus are powered off initially.
+
+        // if self.index > 0 {
+        //     kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_POWER_OFF;
+        // }
+        
+        self.vcpu_init(&kvi).unwrap();
+        Ok(())
+    }
+
+
+    pub fn vcpu_init(&self, kvi: &kvm_vcpu_init) -> Result<()> {
+        // This is safe because we allocated the struct and we know the kernel will read
+        // exactly the size of the struct.
+        let ret = unsafe { ioctl_with_ref(self, KVM_ARM_VCPU_INIT(), kvi) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+
+
+    pub fn set_one_reg(&self, reg_id: u64, data: u64) -> Result<()> {
+        let data_ref = &data as *const u64;
+        let onereg = kvm_one_reg {
+            id: reg_id,
+            addr: data_ref as u64,
+        };
+        // This is safe because we allocated the struct and we know the kernel will read
+        // exactly the size of the struct.
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_ONE_REG(), &onereg) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+
+    pub fn get_one_reg(&self, reg_id: u64) -> Result<u64> {
+        let mut reg_value = 0;
+        let mut onereg = kvm_one_reg {
+            id: reg_id,
+            addr: &mut reg_value as *mut u64 as u64,
+        };
+
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_ONE_REG(), &mut onereg) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(reg_value)
+    }
+
+
     /// KVM_GET_XSAVE
     // pub fn get_xsave(&self) -> Result<kvm_xsave> {
     //     let mut xsave = kvm_xsave::default(); 
@@ -1051,6 +1197,77 @@ impl AsRawFd for VcpuFd {
         self.vcpu.as_raw_fd()
     }
 }
+
+
+
+
+
+
+
+#[derive(Debug)]
+pub struct DeviceFd {
+    fd: File,
+}
+
+impl DeviceFd {
+    /// Tests whether a device supports a particular attribute.
+    ///
+    /// See the documentation for `KVM_HAS_DEVICE_ATTR`.
+    /// # Arguments
+    ///
+    /// * `device_attr` - The device attribute to be tested. `addr` field is ignored.
+    pub fn has_device_attr(&self, device_attr: &kvm_device_attr) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_HAS_DEVICE_ATTR(), device_attr) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+
+    pub fn set_device_attr(&self, device_attr: &kvm_device_attr) -> Result<()> {
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_DEVICE_ATTR(), device_attr) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+
+    pub fn get_device_attr(&self, device_attr: &mut kvm_device_attr) -> Result<()> {
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_DEVICE_ATTR(), device_attr) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// Helper function for creating a new device.
+pub fn new_device(dev_fd: File) -> DeviceFd {
+    DeviceFd { fd: dev_fd }
+}
+
+impl AsRawFd for DeviceFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+impl FromRawFd for DeviceFd {
+
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
+        DeviceFd {
+            fd: File::from_raw_fd(fd),
+        }
+    }
+}
+
+
+
+
+
+
 
 /// Wrapper for `kvm_cpuid2` which has a zero length array at the end.
 /// Hides the zero length array behind a bounds check.
