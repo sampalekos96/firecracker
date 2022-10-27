@@ -1,19 +1,17 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-mod regs;
+use std::{boxed::Box, result};
 
-use std::boxed::Box;
-use std::result;
+// use kvm_ioctls::{DeviceFd, VmFd};
+use aarch64::DeviceFd;
+use aarch64::VmFd;
 
-// use super::kvm_ioctls::DeviceFd;
-use aarch64::gic::DeviceFd;
-
-use crate::aarch64::gic::{Error, GICDevice, GicState};
+use super::gic::{Error, GICDevice};
 
 type Result<T> = result::Result<T, Error>;
 
-pub(crate) struct GICv3 {
+pub struct GICv3 {
     /// The file descriptor for the KVM device
     fd: DeviceFd,
 
@@ -82,28 +80,21 @@ impl GICDevice for GICv3 {
 
     fn create_device(fd: DeviceFd, vcpu_count: u64) -> Box<dyn GICDevice> {
         Box::new(GICv3 {
-            fd,
+            fd: fd,
             properties: [
                 GICv3::get_dist_addr(),
                 GICv3::get_dist_size(),
                 GICv3::get_redists_addr(vcpu_count),
                 GICv3::get_redists_size(vcpu_count),
             ],
-            vcpu_count,
+            vcpu_count: vcpu_count,
         })
     }
 
-    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState> {
-        regs::save_state(&self.fd, mpidrs)
-    }
-
-    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()> {
-        regs::restore_state(&self.fd, mpidrs, state)
-    }
-
-    fn init_device_attributes(gic_device: &dyn GICDevice) -> Result<()> {
-        // Setting up the distributor attribute.
-        // We are placing the GIC below 1GB so we need to substract the size of the distributor.
+    fn init_device_attributes(gic_device: &Box<dyn GICDevice>) -> Result<()> {
+        /* Setting up the distributor attribute.
+         We are placing the GIC below 1GB so we need to substract the size of the distributor.
+        */
         Self::set_device_attribute(
             &gic_device.device_fd(),
             kvm_bindings::KVM_DEV_ARM_VGIC_GRP_ADDR,
@@ -112,58 +103,17 @@ impl GICDevice for GICv3 {
             0,
         )?;
 
-        // Setting up the redistributors' attribute.
-        // We are calculating here the start of the redistributors address. We have one per CPU.
+        /* Setting up the redistributors' attribute.
+        We are calculating here the start of the redistributors address. We have one per CPU.
+        */
         Self::set_device_attribute(
             &gic_device.device_fd(),
             kvm_bindings::KVM_DEV_ARM_VGIC_GRP_ADDR,
             u64::from(kvm_bindings::KVM_VGIC_V3_ADDR_TYPE_REDIST),
-            &GICv3::get_redists_addr(gic_device.vcpu_count()) as *const u64 as u64,
+            &GICv3::get_redists_addr(u64::from(gic_device.vcpu_count())) as *const u64 as u64,
             0,
         )?;
 
         Ok(())
-    }
-}
-
-/// Function that flushes
-/// RDIST pending tables into guest RAM.
-///
-/// The tables get flushed to guest RAM whenever the VM gets stopped.
-fn save_pending_tables(fd: &DeviceFd) -> Result<()> {
-    let init_gic_attr = kvm_bindings::kvm_device_attr {
-        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL,
-        attr: u64::from(kvm_bindings::KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES),
-        addr: 0,
-        flags: 0,
-    };
-    fd.set_device_attr(&init_gic_attr)
-        .map_err(|err| Error::DeviceAttribute(err, true, kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL))
-}
-
-#[cfg(test)]
-mod tests {
-    use kvm_ioctls::Kvm;
-
-    use super::*;
-    use crate::aarch64::gic::{create_gic, GICVersion};
-
-    #[test]
-    fn test_save_pending_tables() {
-        use std::os::unix::io::AsRawFd;
-
-        let kvm = Kvm::new().unwrap();
-        let vm = kvm.create_vm().unwrap();
-        let gic = create_gic(&vm, 1, Some(GICVersion::GICV3)).expect("Cannot create gic");
-        assert!(save_pending_tables(&gic.device_fd()).is_ok());
-
-        unsafe { libc::close(gic.device_fd().as_raw_fd()) };
-
-        let res = save_pending_tables(&gic.device_fd());
-        assert!(res.is_err());
-        assert_eq!(
-            format!("{:?}", res.unwrap_err()),
-            "DeviceAttribute(Error(9), true, 4)"
-        );
     }
 }

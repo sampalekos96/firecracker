@@ -59,7 +59,7 @@ pub enum StartMicrovmError {
     /// Failed to create a `RateLimiter` object.
     CreateRateLimiter(std::io::Error),
     #[cfg(feature = "vsock")]
-    /// Failed to create the backend for the vsock device.
+    // / Failed to create the backend for the vsock device.
     CreateVsockBackend(devices::virtio::vsock::VsockUnixBackendError),
     #[cfg(feature = "vsock")]
     /// Failed to create the vsock device.
@@ -104,6 +104,8 @@ pub enum StartMicrovmError {
     VcpusNotConfigured,
     /// Cannot spawn a new vCPU thread.
     VcpuSpawn(std::io::Error),
+    /// Cannot add a device to the MMIO Bus.
+    RegisterMMIODevice(device_manager::mmio::Error),
 }
 
 impl Display for StartMicrovmError {
@@ -244,6 +246,12 @@ impl Display for StartMicrovmError {
                 err_msg = err_msg.replace("\"", "");
 
                 write!(f, "Cannot spawn vCPU thread. {}", err_msg)
+            }
+            RegisterMMIODevice(ref err) => {
+                let mut err_msg = format!("{}", err);
+                err_msg = err_msg.replace("\"", "");
+
+                write!(f, "Cannot add a device to the MMIO Bus. {}", err_msg)
             }
         }
     }

@@ -301,28 +301,4 @@ pub trait Vhost: AsRawFd + std::marker::Sized {
         }
         Ok(())
     }
-
-    fn get_vring_base(&self, queue_index: usize) -> Result<vhost_vring_state> {
-        let vring_state = vhost_vring_state {
-            index: queue_index as u32,
-            ..Default::default()
-        };
-        let ret = unsafe { ioctl_with_ref(self, VHOST_GET_VRING_BASE(), &vring_state) };
-        if ret < 0 {
-            return ioctl_error();
-        }
-        Ok(vring_state)
-    }
-
-    fn get_vring_addr(&self, queue_index: usize) -> Result<vhost_vring_addr> {
-        let vring_addr = vhost_vring_addr {
-            index: queue_index as u32,
-            ..Default::default()
-        };
-        let ret = unsafe { ioctl_with_ref(self, VHOST_GET_VRING_ADDR(), &vring_addr) };
-        if ret < 0 {
-            return ioctl_error();
-        }
-        Ok(vring_addr)
-    }
 }

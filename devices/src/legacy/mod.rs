@@ -7,8 +7,11 @@
 
 mod i8042;
 mod serial;
+mod rtc_pl031;
 
 pub use self::i8042::Error as I8042DeviceError;
 pub use self::i8042::I8042Device;
+
+pub use self::rtc_pl031::RTC;
 pub use self::serial::Serial;
 pub use self::serial::SerialState;

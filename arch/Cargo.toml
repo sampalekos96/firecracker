@@ -9,7 +9,7 @@ libc = ">=0.2.39"
 # kvm-ioctls = "0.11.0"
 versionize = "0.1.6"
 versionize_derive = "0.1.4"
-vm-fdt = "0.1.0"
+# vm-fdt = "0.1.0"
 derive_more = { version = "0.99.17", default-features = false, features = ["from"] }
 kvm-bindings = { git = "https://github.com/princeton-sns/kvm-bindings", branch = "master" }
 
@@ -20,3 +20,4 @@ memory_model = { path = "../memory_model" }
 
 [dev-dependencies]
 rand = ">=0.5.5"
+device_tree = ">=1.1.0"

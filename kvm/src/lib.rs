@@ -346,10 +346,18 @@ impl VmFd {
     }
 
     pub fn create_device(&self, device: &mut kvm_create_device) -> Result<DeviceFd> {
+
+        // println!("Prin tin ioctl");
+
         let ret = unsafe { ioctl_with_ref(self, KVM_CREATE_DEVICE(), device) };
+
+        // println!("Meta tin ioctl");
+
         if ret == 0 {
+            // println!("Correct i ioctl_with_ref");
             Ok(new_device(unsafe { File::from_raw_fd(device.fd as i32) }))
         } else {
+            // println!("Error stin ioctl_with_ref");
             Err(io::Error::last_os_error())
         }
     }

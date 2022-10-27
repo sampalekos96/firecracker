@@ -82,38 +82,40 @@ impl LegacyDeviceManager {
         })
     }
 
-    /// Register supported legacy devices.
-    pub fn register_devices(&mut self) -> Result<()> {
-        self.io_bus
-            .insert(self.stdio_serial.clone(), 0x3f8, 0x8)
-            .map_err(Error::BusError)?;
-        self.io_bus
-            .insert(
-                Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
-                    self.com_evt_1_3.try_clone().map_err(Error::EventFd)?,
-                ))),
-                0x3e8,
-                0x8,
-            )
-            .map_err(Error::BusError)?;
-        self.io_bus
-            .insert(
-                Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
-                    self.com_evt_2_4.try_clone().map_err(Error::EventFd)?,
-                ))),
-                0x2e8,
-                0x8,
-            )
-            .map_err(Error::BusError)?;
-        self.stdin_handle
-            .lock()
-            .set_raw_mode()
-            .map_err(Error::StdinHandle)?;
-        self.io_bus
-            .insert(self.i8042.clone(), 0x060, 0x5)
-            .map_err(Error::BusError)?;
-        Ok(())
-    }
+    // Register supported legacy devices.
+    // pub fn register_devices(&mut self) -> Result<()> {
+    //     self.io_bus
+    //         .insert(self.stdio_serial.clone(), 0x3f8, 0x8)
+    //         .map_err(Error::BusError)?;
+    //     self.io_bus
+    //         .insert(
+    //             Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
+    //                 self.com_evt_1_3.try_clone().map_err(Error::EventFd)?,
+    //                 None,
+    //             ))),
+    //             0x3e8,
+    //             0x8,
+    //         )
+    //         .map_err(Error::BusError)?;
+    //     self.io_bus
+    //         .insert(
+    //             Arc::new(Mutex::new(devices::legacy::Serial::new_sink(
+    //                 self.com_evt_2_4.try_clone().map_err(Error::EventFd)?,
+    //                 None,
+    //             ))),
+    //             0x2e8,
+    //             0x8,
+    //         )
+    //         .map_err(Error::BusError)?;
+    //     self.stdin_handle
+    //         .lock()
+    //         .set_raw_mode()
+    //         .map_err(Error::StdinHandle)?;
+    //     self.io_bus
+    //         .insert(self.i8042.clone(), 0x060, 0x5)
+    //         .map_err(Error::BusError)?;
+    //     Ok(())
+    // }
 }
 
 #[cfg(test)]

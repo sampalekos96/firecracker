@@ -12,6 +12,7 @@ use logger::{Metric, METRICS};
 use sys_util::EventFd;
 
 use BusDevice;
+use RawIOHandler;
 
 const LOOP_SIZE: usize = 0x40;
 
@@ -67,6 +68,7 @@ pub struct Serial {
     baud_divisor: u16,
     in_buffer: VecDeque<u8>,
     out: Option<Box<dyn io::Write + Send>>,
+    // data_len: usize,
 }
 
 #[derive(Debug)]
@@ -83,6 +85,9 @@ pub struct SerialState {
 
 impl Serial {
     fn new(interrupt_evt: EventFd, out: Option<Box<dyn io::Write + Send>>) -> Serial {
+
+        // let data_len = len.unwrap_or(1);
+
         Serial {
             interrupt_enable: 0,
             interrupt_identification: DEFAULT_INTERRUPT_IDENTIFICATION,
@@ -95,6 +100,7 @@ impl Serial {
             baud_divisor: DEFAULT_BAUD_DIVISOR,
             in_buffer: VecDeque::new(),
             out,
+            // data_len,
         }
     }
 
@@ -228,6 +234,21 @@ impl Serial {
         Ok(())
     }
 }
+
+
+
+
+impl RawIOHandler for Serial {
+    fn raw_input(&mut self, data: &[u8]) -> io::Result<()> {
+        if !self.is_loop() {
+            self.in_buffer.extend(data);
+            self.recv_data()?;
+        }
+        Ok(())
+    }
+}
+
+
 
 impl BusDevice for Serial {
     fn read(&mut self, offset: u64, data: &mut [u8]) {

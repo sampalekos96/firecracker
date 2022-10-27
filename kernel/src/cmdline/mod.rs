@@ -9,6 +9,7 @@
 
 use std::fmt;
 use std::result;
+use std::ffi::CString;
 
 /// The error type for command line building operations.
 #[derive(PartialEq, Debug)]
@@ -144,6 +145,12 @@ impl Cmdline {
     pub fn as_str(&self) -> &str {
         self.line.as_str()
     }
+
+    /// Returns the cmdline in progress as CString.
+    pub fn as_cstring(&self) -> Result<CString> {
+        Ok(CString::new(self.line.clone()).map_err(|_| Error::InvalidAscii)?)
+    }
+
 }
 
 impl Into<Vec<u8>> for Cmdline {

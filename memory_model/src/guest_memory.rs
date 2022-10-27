@@ -873,13 +873,13 @@ impl GuestMemory {
     /////     Ok(())
     ///// # }
     ///// ```
-    //pub fn get_host_address(&self, guest_addr: GuestAddress) -> Result<*const u8> {
-    //    self.do_in_region(guest_addr, 1, |mapping, offset| {
-    //        // This is safe; `do_in_region` already checks that offset is in
-    //        // bounds.
-    //        Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
-    //    })
-    //}
+    pub fn get_host_address(&self, guest_addr: GuestAddress) -> Result<*const u8> {
+       self.do_in_region(guest_addr, 1, |mapping, offset| {
+           // This is safe; `do_in_region` already checks that offset is in
+           // bounds.
+           Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
+       })
+    }
 
     /// Only used by vhost-vsock snapshotting
     pub fn get_guest_address(&self, host_addr: u64) -> Result<GuestAddress> {

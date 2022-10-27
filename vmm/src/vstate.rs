@@ -41,7 +41,10 @@ use vmm_config::machine_config::VmConfig;
 
 const KVM_MEM_LOG_DIRTY_PAGES: u32 = 0x1;
 
-const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x04f0;
+// const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u16 = 0x04f0;
+
+const MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE: u64 = 0x40000000;
+
 const MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE: u8 = 123;
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -100,6 +103,10 @@ pub enum Error {
     LoadSnapshot(io::Error),
     /// Error configuring registers
     ConfigureRegisters(io::Error),
+    VcpuArmPreferredTarget(io::Error),
+    VcpuArmInit(io::Error),
+    REGSConfiguration(arch::aarch64::regs::Error),
+    SetupGIC(arch::aarch64::gic::Error),
 }
 pub type Result<T> = result::Result<T, Error>;
 
@@ -227,49 +234,50 @@ impl Vm {
 
 
     /// Stub function that needs to be implemented when aarch64 functionality is added.
-    pub fn configure_aarch64(
-        &self,
-        _guest_mem: &GuestMemory,
-        _vcpus: &mut [Vcpu],
-        _entry_addr: GuestAddress,
-        _mmio_device: &MMIODeviceManager,
-    ) -> super::Result<()> {
+    // pub fn configure_aarch64(
+        // &self,
+        // _guest_mem: &GuestMemory,
+        // _vcpus: &mut [Vcpu],
+        // _entry_addr: GuestAddress,
+        // _mmio_device: &MMIODeviceManager,
+    // ) -> super::Result<()> {
 
-        for vcpu in _vcpus.iter_mut() {
+        // for vcpu in _vcpus.iter_mut() {
             // vcpu.fd
                 // .configure(...)
-            arch::aarch64::regs::setup_boot_regs(
-                &vcpu.fd,
-                0,
-                _entry_addr.offset().try_into().unwrap(),
-                _guest_mem,
-            ).unwrap();
+
+            // arch::aarch64::regs::setup_boot_regs(
+            //     &vcpu.fd,
+            //     0,
+            //     _entry_addr.offset().try_into().unwrap(),
+            //     _guest_mem,
+            // ).unwrap();
             // .map_err(Error::ConfigureRegisters)?;
 
-            vcpu.mpidr =
-                arch::aarch64::regs::read_mpidr(&vcpu.fd).unwrap();
+            // vcpu.mpidr =
+                // arch::aarch64::regs::read_mpidr(&vcpu.fd).unwrap();
                 // .map_err(io::Error::last_os_error())?;
-        }
+        // }
 
-        let mut vcpus_mpidr = Vec::new();
+        // let mut vcpus_mpidr = Vec::new();
 
-        for vcpu in _vcpus.iter_mut() {
+        // for vcpu in _vcpus.iter_mut() {
 
-            let vcpu_mpidr = vcpu.get_mpidr();
+            // let vcpu_mpidr = vcpu.get_mpidr();
 
-            vcpus_mpidr.push(vcpu_mpidr);
+            // vcpus_mpidr.push(vcpu_mpidr);
             
-        }
+        // }
 
-        arch::aarch64::configure_system(
-            _guest_mem,
-            vcpus_mpidr,
-            _mmio_device.get_device_info(),
-            self.get_irqchip(),
-        ).unwrap();
+        // arch::aarch64::configure_system(
+            // _guest_mem,
+            // vcpus_mpidr,
+            // _mmio_device.get_device_info(),
+            // self.get_irqchip(),
+        // ).unwrap();
 
-        Ok(())
-    }
+        // Ok(())
+    // }
 
 
 
@@ -375,12 +383,12 @@ impl Vm {
     }
 
 
-    pub fn get_irqchip(&self) -> &dyn GICDevice {
-        self.irqchip_handle
-            .as_ref()
-            .expect("IRQ chip not set")
-            .as_ref()
-    }
+    // pub fn get_irqchip(&self) -> &dyn GICDevice {
+    //     self.irqchip_handle
+    //         .as_ref()
+    //         .expect("IRQ chip not set")
+    //         .as_ref()
+    // }
 
     /// This function creates the irq chip and adds 3 interrupt events to the IRQ.
     pub fn setup_irqchip(
@@ -390,14 +398,14 @@ impl Vm {
     ) -> Result<()> {
 
         // println!("Bika setup_irqchip");
-        println!("Prin tin create_gic");
+        // println!("Prin tin create_gic");
 
         self.irqchip_handle = Some(
-            arch::aarch64::gic::create_gic(&self.fd, vcpu_count.into(), None)
-                .map_err(Error::VmCreateGIC)?,
+            arch::aarch64::gic::create_gic(&self.fd, vcpu_count.into())
+                .map_err(Error::SetupGIC)?,
         );
 
-        println!("Meta tin create_gic");
+        // println!("Meta tin create_gic");
 
         if let Some(snapshot) = maybe_snapshot {
             let start = now_monotime_us();
@@ -418,6 +426,10 @@ impl Vm {
         pit_config.flags = KVM_PIT_SPEAKER_DUMMY;
         self.fd.create_pit2(pit_config).map_err(Error::VmSetup)?;
         Ok(())
+    }
+
+    pub fn get_irqchip(&self) -> &Box<dyn GICDevice> {
+        &self.irqchip_handle.as_ref().unwrap()
     }
 
     /// Gets a reference to the guest memory owned by this VM.
@@ -442,7 +454,7 @@ pub struct Vcpu {
     pub fd: VcpuFd,
     id: u8,
     // io_bus: devices::Bus,
-    mmio_bus: devices::Bus,
+    mmio_bus: Option<devices::Bus>,
     mpidr: u64,
     create_ts: TimestampUs,
     ts_126: Vec<TimestampUs>,
@@ -459,8 +471,8 @@ impl Vcpu {
         id: u8,
         vm: &Vm,
         // io_bus: devices::Bus,
-        mmio_bus: devices::Bus,
-        mpidr: u64,
+        // mmio_bus: devices::Bus,
+        // mpidr: u64,
         create_ts: TimestampUs,
     ) -> Result<Self> {
         let kvm_vcpu = vm.fd.create_vcpu(id).map_err(Error::VcpuFd)?;
@@ -472,21 +484,61 @@ impl Vcpu {
             fd: kvm_vcpu,
             id,
             // io_bus,
-            mmio_bus,
-            mpidr,
+            mmio_bus: None,
+            mpidr: 0,
             create_ts,
             ts_126: Vec::new(),
         })
     }
 
-    pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
-        self.mmio_bus = mmio_bus;
+
+    pub fn configure_aarch64(
+        &mut self,
+        vm_fd: &VmFd,
+        guest_mem: &GuestMemory,
+        kernel_load_addr: GuestAddress,
+    ) -> Result<()> {
+
+        // let vm_memory = vm
+            // .get_memory()
+            // .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
+
+        let mut kvi: kvm_bindings::kvm_vcpu_init = kvm_bindings::kvm_vcpu_init::default();
+
+        // This reads back the kernel's preferred target type.
+        vm_fd
+            .get_preferred_target(&mut kvi)
+            .map_err(Error::VcpuArmPreferredTarget)?;
+        // We already checked that the capability is supported.
+        kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_PSCI_0_2;
+        // Non-boot cpus are powered off initially.
+        if self.id > 0 {
+            kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_POWER_OFF;
+        }
+
+        self.fd.vcpu_init(&kvi).map_err(Error::VcpuArmInit)?;
+        arch::aarch64::regs::setup_regs(&self.fd, self.id, kernel_load_addr.offset(), guest_mem)
+            .map_err(Error::REGSConfiguration)?;
+
+        self.mpidr = arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::REGSConfiguration)?;
+
+        Ok(())
     }
 
 
     pub fn get_mpidr(&self) -> u64 {
         self.mpidr
     }
+
+
+    pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
+        self.mmio_bus = Some(mmio_bus);
+    }
+
+
+    // pub fn get_mpidr(&self) -> u64 {
+        // self.mpidr
+    // }
 
 
     // fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
@@ -663,72 +715,95 @@ impl Vcpu {
         Ok(())
     }
 
+    fn check_boot_complete_signal(&self, addr: u64, data: &[u8]) {
+        if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
+            && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
+        {
+            println!("BOOTARAME!!!!!!!!!!!!!!!!!!!!!!!!!");
+            super::Vmm::log_boot_time(&self.create_ts);
+        }
+    }
+
     fn run_emulation(&mut self,
                      snap_barrier: &Arc<Barrier>,
                      vcpu_snap_evt: &EventFd,
                      snap_sender: &Option<Sender<VcpuInfo>>,
                      //from_snapshot: bool,
                      ) -> Result<()> {
-        println!("running");
+        // println!("running");
         match self.fd.run() {
             Ok(run) => match run {
 
                 // VcpuExit::IoIn(addr, data) => {
-                //     assert_eq!(1, data.len());
-                //     self.io_bus.read(u64::from(addr), data);
-                //     METRICS.vcpu.exit_io_in.inc();
-                //     Ok(())
+                    // println!("VCPUEXIT: IoIn");
+                    // assert_eq!(1, data.len());
+                    // self.io_bus.read(u64::from(addr), data);
+                    // METRICS.vcpu.exit_io_in.inc();
+                    // Ok(())
                 // }
-
-                VcpuExit::IoOut(addr, data) => {
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
-                        && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
-                    {
-                        super::Vmm::log_boot_time(&self.create_ts);
+                // VcpuExit::IoOut(addr, data) => {
+                    // println!("VCPUEXIT: IoOut");
+                    // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
+                        // && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
+                    // {
+                        // super::Vmm::log_boot_time(&self.create_ts);
                         //println!("Boot done.");
-                    }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 124 {
+                    // }
+                    // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 124 {
                         //println!("vcpu {} signaled", self.id);
-                        if let Some(ref sender) = snap_sender {
-                            let mut vcpu_state = VcpuState::default();
-                            self.dump_vcpu_state(&mut vcpu_state)?;
-                            sender.send(VcpuInfo{
-                                id: self.id,
-                                state: vcpu_state,
-                            }).expect("Failed sending vcpu state");
-                            vcpu_snap_evt.write(1).expect("Failed signaling vcpu snap event");
-                            snap_barrier.wait();
-                            return Err(Error::VcpuUnhandledKvmExit);
-                        }
-                    }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
-                        panic!("mounting app file system failed");
-                    }
-                    if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
-                        self.ts_126.push(TimestampUs {
-                            time_us: now_monotime_us(),
-                            cputime_us: now_cputime_us()
-                        });
-                        fc_util::fc_log!("since create_ts: time: {}us, cputime: {}us",
-                            self.ts_126[0].time_us - self.create_ts.time_us,
-                            self.ts_126[0].cputime_us - self.create_ts.cputime_us);
+                        // if let Some(ref sender) = snap_sender {
+                            // let mut vcpu_state = VcpuState::default();
+                            // self.dump_vcpu_state(&mut vcpu_state)?;
+                            // sender.send(VcpuInfo{
+                                // id: self.id,
+                                // state: vcpu_state,
+                            // }).expect("Failed sending vcpu state");
+                            // vcpu_snap_evt.write(1).expect("Failed signaling vcpu snap event");
+                            // snap_barrier.wait();
+                            // return Err(Error::VcpuUnhandledKvmExit);
+                        // }
+                    // }
+                    // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 125 {
+                        // panic!("mounting app file system failed");
+                    // }
+                    // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE && data[0] == 126 {
+                        // self.ts_126.push(TimestampUs {
+                            // time_us: now_monotime_us(),
+                            // cputime_us: now_cputime_us()
+                        // });
+                        // fc_util::fc_log!("since create_ts: time: {}us, cputime: {}us",
+                            // self.ts_126[0].time_us - self.create_ts.time_us,
+                            // self.ts_126[0].cputime_us - self.create_ts.cputime_us);
                         //return Err(Error::VcpuUnhandledKvmExit)
-                    }
+                    // }
 
                     // self.io_bus.write(u64::from(addr), data);
-
-
-                    METRICS.vcpu.exit_io_out.inc();
-                    Ok(())
-                }
+                    // METRICS.vcpu.exit_io_out.inc();
+                    // Ok(())
+                // }
                 VcpuExit::MmioRead(addr, data) => {
-                    self.mmio_bus.read(addr, data);
-                    METRICS.vcpu.exit_mmio_read.inc();
+                    // println!("VCPUEXIT: MmioRead");
+                    if let Some(ref mmio_bus) = self.mmio_bus {
+                        // TODO:
+                        //remove as_ref
+                        mmio_bus.read(addr, data);
+                        METRICS.vcpu.exit_mmio_read.inc();
+                    }
                     Ok(())
                 }
                 VcpuExit::MmioWrite(addr, data) => {
-                    self.mmio_bus.write(addr, data);
-                    METRICS.vcpu.exit_mmio_write.inc();
+                    // println!("VCPUEXIT: MmioWrite");
+                    // let data_from_user = String::from_utf8_lossy(data);
+                    // println!("{}",data_from_user);
+                    if let Some(ref mmio_bus) = self.mmio_bus {
+                        // TODO:
+                        //remove as_ref
+                        // add check_boot_complete_signal()
+                        self.check_boot_complete_signal(addr, data);
+
+                        mmio_bus.write(addr, data);
+                        METRICS.vcpu.exit_mmio_write.inc();
+                    }
                     Ok(())
                 }
                 VcpuExit::Hlt => {

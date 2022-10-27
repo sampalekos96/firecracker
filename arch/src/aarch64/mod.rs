@@ -9,20 +9,43 @@ pub mod fdt;
 pub mod layout;
 
 pub mod gic;
+mod gicv2;
+mod gicv3;
+
+use aarch64::gic::GICDevice;
+
+use DeviceType;
 
 pub mod regs;
+
+use kvm::VmFd;
+use kvm::DeviceFd;
 
 use std::cmp::min;
 // use std::io;
 use std::fmt::Debug;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::ffi::CStr;
+
+// #[derive(Debug)]
+// pub enum Error {
+//     SetupFDT(fdt::Error),
+// }
+
+// impl From<Error> for super::Error {
+//     fn from(e: Error) -> super::Error {
+//         super::Error::Aarch64Setup(e)
+//     }
+// }
 
 use memory_model::{GuestAddress, GuestMemory};
 
 pub use self::fdt::DeviceInfoForFDT;
 
-use self::gic::GICDevice;
+pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
+
+// use self::gic::GICDevice;
 
 // use crate::vmm;
 // use crate::vstate::Vcpu;    
@@ -32,9 +55,41 @@ use self::gic::GICDevice;
 /// Returns a Vec of the valid memory addresses for aarch64.
 /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
 pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
-    let dram_size = min(size, layout::DRAM_MEM_END);
+    // let dram_size = min(size, layout::DRAM_MEM_END);
+    // vec![(GuestAddress(layout::DRAM_MEM_START.try_into().unwrap()), dram_size)]
+    let dram_size = min(size as u64, layout::DRAM_MEM_MAX_SIZE) as usize;
     vec![(GuestAddress(layout::DRAM_MEM_START.try_into().unwrap()), dram_size)]
 }
+
+
+
+
+/// Configures the system and should be called once per vm before starting vcpu threads.
+/// For aarch64, we only setup the FDT.
+///
+/// # Arguments
+///
+/// * `guest_mem` - The memory to be used by the guest.
+/// * `cmdline_cstring` - The kernel commandline.
+/// * `num_cpus` - Number of virtual CPUs of the system.
+pub fn configure_system<T: DeviceInfoForFDT + Clone + Debug>(
+    guest_mem: &GuestMemory,
+    cmdline_cstring: &CStr,
+    vcpu_mpidr: Vec<u64>,
+    device_info: Option<&HashMap<(DeviceType, String), T>>,
+    gic_device: &Box<dyn GICDevice>,
+) -> super::Result<()> {
+    fdt::create_fdt(guest_mem, vcpu_mpidr, cmdline_cstring, device_info, gic_device,).unwrap();
+        // .map_err(Error::SetupFDT)?;
+    Ok(())
+}
+
+
+/// Returns the memory address where the kernel could be loaded.
+pub fn get_kernel_start() -> u64 {
+    layout::DRAM_MEM_START
+}
+
 
 /// Configures the system and should be called once per vm before starting vcpu threads.
 /// For aarch64, we only setup the FDT.
@@ -48,23 +103,22 @@ pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
 /// * `gic_device` - The GIC device.
 /// * `initrd` - Information about an optional initrd.
 
+// pub fn configure_system<T: DeviceInfoForFDT + Clone + Debug, S: std::hash::BuildHasher>(
+//     guest_mem: &GuestMemory,
+//     vcpu_mpidr: Vec<u64>,
+//     device_info: &HashMap<String, T, S>,
+//     gic_device: &dyn GICDevice,
+// ) -> super::Result<()> {
 
-pub fn configure_system<T: DeviceInfoForFDT + Clone + Debug, S: std::hash::BuildHasher>(
-    guest_mem: &GuestMemory,
-    vcpu_mpidr: Vec<u64>,
-    device_info: &HashMap<String, T, S>,
-    gic_device: &dyn GICDevice,
-) -> super::Result<()> {
+//     fdt::create_fdt(
+//         guest_mem,
+//         vcpu_mpidr,
+//         device_info,
+//         gic_device,
+//     ).unwrap();
 
-    fdt::create_fdt(
-        guest_mem,
-        vcpu_mpidr,
-        device_info,
-        gic_device,
-    ).unwrap();
-
-    Ok(())
-}
+//     Ok(())
+// }
 
 
 
@@ -73,7 +127,7 @@ fn get_fdt_addr(mem: &GuestMemory) -> u64 {
     // we return the start of the DRAM so that
     // we allow the code to try and load the FDT.
 
-    if let Some(addr) = mem.end_addr().checked_sub((layout::FDT_MAX_SIZE as u64 - 1).try_into().unwrap()) {
+    if let Some(addr) = mem.end_addr().checked_sub((layout::FDT_MAX_SIZE as u64).try_into().unwrap()) {
         if mem.address_in_range(addr) {
             return addr.offset().try_into().unwrap();
         }

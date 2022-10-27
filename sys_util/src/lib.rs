@@ -17,12 +17,14 @@ mod eventfd;
 mod signal;
 mod struct_util;
 mod terminal;
+mod time;
 
 pub use eventfd::*;
 pub use ioctl::*;
 pub use signal::*;
 pub use struct_util::{read_struct, read_struct_slice};
 pub use terminal::*;
+pub use time::*;
 
 /// Wrapper to interpret syscall exit codes and provide a rustacean `io::Result`
 pub struct SyscallReturnCode(pub c_int);

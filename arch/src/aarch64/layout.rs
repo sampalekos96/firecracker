@@ -52,7 +52,9 @@
 /// Start of RAM on 64 bit ARM.
 pub const DRAM_MEM_START: u64 = 0x8000_0000; // 2 GB.
 /// The maximum addressable RAM address.
-pub const DRAM_MEM_END: usize = 0x00FF_8000_0000; // 1024 - 2 = 1022 GB.
+pub const DRAM_MEM_END: u64 = 0x00FF_8000_0000; // 1024 - 2 = 1022 GB.
+
+pub const DRAM_MEM_MAX_SIZE: u64 = DRAM_MEM_END - DRAM_MEM_START;
 
 /// Kernel command line start address.
 pub const CMDLINE_START: usize = 0x0;
@@ -72,7 +74,7 @@ pub const FDT_MAX_SIZE: usize = 0x20_0000;
 pub const IRQ_BASE: u32 = 32;
 
 /// Last usable interrupt on aarch64.
-pub const IRQ_MAX: u32 = 128;
+pub const IRQ_MAX: u32 = 159;
 
 /// Below this address will reside the GIC, above this address will reside the MMIO devices.
 pub const MAPPED_IO_START: u64 = 1 << 30; // 1 GB

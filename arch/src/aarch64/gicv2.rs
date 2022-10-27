@@ -1,14 +1,13 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-mod regs;
+use std::{boxed::Box, result};
 
-use std::boxed::Box;
-use std::result;
+// use kvm_ioctls::{DeviceFd, VmFd};
+use aarch64::DeviceFd;
+use aarch64::VmFd;
 
-use crate::aarch64::gic::{Error, GICDevice, GicState};
-
-use aarch64::gic::DeviceFd;
+use super::gic::{Error, GICDevice};
 
 type Result<T> = result::Result<T, Error>;
 
@@ -81,28 +80,20 @@ impl GICDevice for GICv2 {
 
     fn create_device(fd: DeviceFd, vcpu_count: u64) -> Box<dyn GICDevice> {
         Box::new(GICv2 {
-            fd,
+            fd: fd,
             properties: [
                 GICv2::get_dist_addr(),
                 GICv2::get_dist_size(),
                 GICv2::get_cpu_addr(),
                 GICv2::get_cpu_size(),
             ],
-            vcpu_count,
+            vcpu_count: vcpu_count,
         })
     }
 
-    fn save_device(&self, mpidrs: &[u64]) -> Result<GicState> {
-        regs::save_state(&self.fd, mpidrs)
-    }
-
-    fn restore_device(&self, mpidrs: &[u64], state: &GicState) -> Result<()> {
-        regs::restore_state(&self.fd, mpidrs, state)
-    }
-
-    fn init_device_attributes(gic_device: &dyn GICDevice) -> Result<()> {
-        // Setting up the distributor attribute.
-        // We are placing the GIC below 1GB so we need to substract the size of the distributor.
+    fn init_device_attributes(gic_device: &Box<dyn GICDevice>) -> Result<()> {
+        /* Setting up the distributor attribute.
+        We are placing the GIC below 1GB so we need to substract the size of the distributor. */
         Self::set_device_attribute(
             &gic_device.device_fd(),
             kvm_bindings::KVM_DEV_ARM_VGIC_GRP_ADDR,
@@ -111,7 +102,7 @@ impl GICDevice for GICv2 {
             0,
         )?;
 
-        // Setting up the CPU attribute.
+        /* Setting up the CPU attribute. */
         Self::set_device_attribute(
             &gic_device.device_fd(),
             kvm_bindings::KVM_DEV_ARM_VGIC_GRP_ADDR,

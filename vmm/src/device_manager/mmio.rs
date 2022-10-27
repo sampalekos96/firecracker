@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
 use devices;
+use devices::virtio::TYPE_BLOCK;
+use devices::{BusDevice, RawIOHandler};
 use kernel_cmdline;
 use kvm::{IoeventAddress, VmFd};
 use memory_model::GuestMemory;
@@ -20,6 +22,12 @@ use self::versionize::{VersionMap, Versionize, VersionizeResult};
 use self::versionize_derive::Versionize;
 // use versionize_derive::Versionize;
 use arch::aarch64::DeviceInfoForFDT;
+use arch::DeviceType;
+
+use std::os::unix::io::AsRawFd;
+
+use sys_util::EventFd;
+
 
 /// Errors for MMIO device manager.
 #[derive(Debug)]
@@ -30,6 +38,8 @@ pub enum Error {
     CreateMmioDevice(io::Error),
     /// Appending to kernel command line failed.
     Cmdline(kernel_cmdline::Error),
+    /// Failure in creating or cloning an event fd.
+    EventFd(io::Error),
     /// No more IRQs are available.
     IrqsExhausted,
     /// Registering an IO Event failed.
@@ -48,6 +58,7 @@ impl fmt::Display for Error {
             Error::Cmdline(ref e) => {
                 write!(f, "unable to add device to kernel command line: {}", e)
             }
+            Error::EventFd(ref e) => write!(f, "failed to create or clone event descriptor: {}", e),
             Error::IrqsExhausted => write!(f, "no more IRQs are available"),
             Error::RegisterIoEvent(ref e) => write!(f, "failed to register IO event: {}", e),
             Error::RegisterIrqFd(ref e) => write!(f, "failed to register irqfd: {}", e),
@@ -68,14 +79,14 @@ const MMIO_LEN: u64 = 0x1000;
 /// to its configuration space.
 const MMIO_CFG_SPACE_OFF: u64 = 0x100;
 
-#[derive(Clone, Debug, PartialEq, Versionize)]
+#[derive(Clone, Debug)]
 pub struct MMIODeviceInfo {
     /// Mmio address at which the device is registered.
     pub addr: u64,
+    /// Used Irq line(s) for the device.
+    pub irq: u32,
     /// Mmio addr range length.
     pub len: u64,
-    /// Used Irq line(s) for the device.
-    pub irqs: u32,
 }
 
 // pub trait DeviceInfoForFDT {
@@ -92,7 +103,7 @@ impl DeviceInfoForFDT for MMIODeviceInfo {
         self.addr
     }
     fn irq(&self) -> u32 {
-        self.irqs
+        self.irq
     }
     fn length(&self) -> u64 {
         self.len
@@ -100,50 +111,103 @@ impl DeviceInfoForFDT for MMIODeviceInfo {
 }
 
 /// Manages the complexities of registering a MMIO device.
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct MMIODeviceManager {
     pub bus: devices::Bus,
     guest_mem: GuestMemory,
     mmio_base: u64,
     irq: u32,
     last_irq: u32,
-    id_to_addr_map: HashMap<String, MMIODeviceInfo>,
+    id_to_dev_info: HashMap<(DeviceType, String), MMIODeviceInfo>,
+    raw_io_handlers: HashMap<(DeviceType, String), Arc<Mutex<dyn RawIOHandler>>>,
 }
 
 impl MMIODeviceManager {
     /// Create a new DeviceManager handling mmio devices (virtio net, block).
     pub fn new(
         guest_mem: GuestMemory,
-        mmio_base: u64,
+        mmio_base: &mut u64,
         irq_interval: (u32, u32),
     ) -> MMIODeviceManager {
+
+        *mmio_base += MMIO_LEN;
+
         MMIODeviceManager {
             guest_mem,
-            mmio_base,
+            mmio_base: *mmio_base,
             irq: irq_interval.0,
             last_irq: irq_interval.1,
             bus: devices::Bus::new(),
-            id_to_addr_map: HashMap::new(),
+            id_to_dev_info: HashMap::new(),
+            raw_io_handlers: HashMap::new(),
         }
     }
 
+
+    // #[cfg(target_arch = "aarch64")]
+    // /// Register an early console at some MMIO address.
+    // pub fn enable_earlycon(
+    //     &mut self,
+    //     vm: &VmFd,
+    //     cmdline: &mut kernel_cmdline::Cmdline,
+    // ) -> Result<()> {
+    //     if self.irq > self.last_irq {
+    //         return Err(Error::IrqsExhausted);
+    //     }
+
+    //     let com_evt = sys_util::EventFd::new().map_err(Error::EventFd)?;
+    //     let device = devices::legacy::Serial::new_out(
+    //         com_evt.try_clone().map_err(Error::EventFd)?,
+    //         Box::new(io::stdout()),
+    //         Some(4),
+    //     );
+
+    //     vm.register_irqfd(&com_evt, self.irq)
+    //         .map_err(Error::RegisterIrqFd)?;
+
+    //     self.bus
+    //         .insert(Arc::new(Mutex::new(device)), self.mmio_base, MMIO_LEN)
+    //         .map_err(|err| Error::BusError(err))?;
+
+    //     cmdline
+    //         .insert("earlycon", &format!("uart,mmio32,0x{:08x}", self.mmio_base))
+    //         .map_err(Error::Cmdline)?;
+
+    //     let ret = self.mmio_base;
+    //     self.id_to_addr_map.insert(
+    //         "uart".to_string(),
+    //         MMIODeviceInfo {
+    //             addr: ret,
+    //             len: MMIO_LEN,
+    //             irq: self.irq,
+    //             type_: DeviceType::Serial,
+    //         },
+    //     );
+
+    //     self.mmio_base += MMIO_LEN;
+    //     self.irq += 1;
+
+    //     Ok(())
+    // }
+
+
     /// Gets the information of the devices registered up to some point in time.
-    pub fn get_device_info(&self) -> &HashMap<String, MMIODeviceInfo> {
-        &self.id_to_addr_map
+    pub fn get_device_info(&self) -> &HashMap<(DeviceType, String), MMIODeviceInfo> {
+        &self.id_to_dev_info
     }
 
-    /// Register a device to be used via MMIO transport.
-    pub fn register_device(
+    /// Register a virtio device to be used via MMIO transport.
+    pub fn register_virtio_device(
         &mut self,
         vm: &VmFd,
-        device: Box<dyn devices::virtio::VirtioDevice>,
-        cmdline: Option<&mut kernel_cmdline::Cmdline>,
-        id: Option<String>,
+        device: Box<devices::virtio::VirtioDevice>,
+        cmdline: &mut kernel_cmdline::Cmdline,
+        type_id: u32,
+        device_id: &str,
     ) -> Result<u64> {
         if self.irq > self.last_irq {
             return Err(Error::IrqsExhausted);
         }
-
         let mmio_device = devices::virtio::MmioDevice::new(self.guest_mem.clone(), device)
             .map_err(Error::CreateMmioDevice)?;
         for (i, queue_evt) in mmio_device.queue_evts().iter().enumerate() {
@@ -151,6 +215,7 @@ impl MMIODeviceManager {
                 self.mmio_base + u64::from(devices::virtio::NOTIFY_REG_OFFSET),
             );
 
+            // Check if queue_evt needs to be passed as raw fd
             vm.register_ioevent(queue_evt, &io_addr, i as u32)
                 .map_err(Error::RegisterIoEvent)?;
         }
@@ -170,36 +235,127 @@ impl MMIODeviceManager {
         // bytes to 1024; further, the '{}' formatting rust construct will automatically
         // transform it to decimal
 
-        //We won't add virtio device to cmdline
+        #[cfg(target_arch = "x86_64")]
+        cmdline
+            .insert(
+                "virtio_mmio.device",
+                &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
+            )
+            .map_err(Error::Cmdline)?;
+        
+        let ret = self.mmio_base;
 
-        // if let Some(cmdline) = cmdline {
-            // cmdline
-                // .insert(
-                    // "virtio_mmio.device",
-                    // &format!("{}K@0x{:08x}:{}", MMIO_LEN / 1024, self.mmio_base, self.irq),
-                // )
-                // .map_err(Error::Cmdline)?;
-        // }
-        let _addr = self.mmio_base;
-        let _irqs = self.irq;
-        // self.mmio_base += MMIO_LEN;
-        // self.irq += 1;
-        let temp = MMIODeviceInfo {addr: _addr, len: MMIO_LEN, irqs: _irqs};
-
-        // if let Some(ref device_id) = id {
-        //     println!("TO DEVICE TYPE:");
-        //     println!("{}", device_id);
-        // }
-
-        if let Some(device_id) = id {
-            self.id_to_addr_map.insert(device_id.clone(), temp);
-        }
+        self.id_to_dev_info.insert(
+            (DeviceType::Virtio(type_id), device_id.to_string()),
+            MMIODeviceInfo {
+                addr: ret,
+                len: MMIO_LEN,
+                irq: self.irq,
+            },
+        );
 
         self.mmio_base += MMIO_LEN;
         self.irq += 1;
 
-        Ok(_addr)
+        Ok(ret)
     }
+
+
+    /// Register an early console at some MMIO address.
+    pub fn register_mmio_serial(
+        &mut self,
+        vm: &VmFd,
+        cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<()> {
+        if self.irq > self.last_irq {
+            return Err(Error::IrqsExhausted);
+        }
+
+        let com_evt = EventFd::new().map_err(Error::EventFd)?;
+        let device = devices::legacy::Serial::new_out(
+            com_evt.try_clone().map_err(Error::EventFd)?,
+            Box::new(io::stdout()),
+        );
+
+        let bus_device = Arc::new(Mutex::new(device));
+        let raw_io_device = bus_device.clone();
+
+        vm.register_irqfd(&com_evt, self.irq)
+            .map_err(Error::RegisterIrqFd)?;
+
+        self.bus
+            .insert(bus_device, self.mmio_base, MMIO_LEN)
+            .map_err(|err| Error::BusError(err))?;
+
+        // Register the RawIOHandler trait.
+        self.raw_io_handlers.insert(
+            (DeviceType::Serial, DeviceType::Serial.to_string()),
+            raw_io_device,
+        );
+
+        cmdline
+            .insert("earlycon", &format!("uart,mmio,0x{:08x}", self.mmio_base))
+            .map_err(Error::Cmdline)?;
+
+        let ret = self.mmio_base;
+        self.id_to_dev_info.insert(
+            (DeviceType::Serial, DeviceType::Serial.to_string()),
+            MMIODeviceInfo {
+                addr: ret,
+                len: MMIO_LEN,
+                irq: self.irq,
+            },
+        );
+
+        self.mmio_base += MMIO_LEN;
+        self.irq += 1;
+
+        Ok(())
+    }
+
+
+
+    /// Register a MMIO RTC device.
+    pub fn register_mmio_rtc(&mut self, vm: &VmFd) -> Result<()> {
+        if self.irq > self.last_irq {
+            return Err(Error::IrqsExhausted);
+        }
+
+        // Attaching the RTC device.
+        let rtc_evt = EventFd::new().map_err(Error::EventFd)?;
+        let device = devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
+        vm.register_irqfd(&rtc_evt, self.irq)
+            .map_err(Error::RegisterIrqFd)?;
+
+        self.bus
+            .insert(Arc::new(Mutex::new(device)), self.mmio_base, MMIO_LEN)
+            .map_err(|err| Error::BusError(err))?;
+
+        let ret = self.mmio_base;
+        self.id_to_dev_info.insert(
+            (DeviceType::RTC, "rtc".to_string()),
+            MMIODeviceInfo {
+                addr: ret,
+                len: MMIO_LEN,
+                irq: self.irq,
+            },
+        );
+
+        self.mmio_base += MMIO_LEN;
+        self.irq += 1;
+
+        Ok(())
+    }
+
+
+
+
+
+
+
+
+
+
 
     /// Update a drive by rebuilding its config space and rewriting it on the bus.
     pub fn update_drive(&self, addr: u64, new_size: u64) -> Result<()> {
@@ -223,7 +379,7 @@ impl MMIODeviceManager {
             return None
         }
         else {
-            Some(self.id_to_addr_map.get(id)?.addr())
+            Some(self.id_to_dev_info.get(&(DeviceType::Serial, id.to_string()))?.addr())
         }
         // temp?.addr()
     }
