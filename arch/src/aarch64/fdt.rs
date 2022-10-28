@@ -132,6 +132,9 @@ pub fn create_fdt<T: DeviceInfoForFDT + Clone + Debug>(
 
     // println!("Prin tin create_timer_node");
     create_timer_node(&mut fdt)?;
+
+    create_clock_node(&mut fdt)?;
+
     // println!("Prin tin create_psci_node");
     create_psci_node(&mut fdt)?;
 
@@ -397,6 +400,22 @@ fn create_gic_node(fdt: &mut Vec<u8>, gic_device: &Box<dyn GICDevice>) -> Result
     let gic_intr_prop = generate_prop32(&gic_intr);
 
     append_property(fdt, "interrupts", &gic_intr_prop)?;
+    append_end_node(fdt)?;
+
+    Ok(())
+}
+
+fn create_clock_node(fdt: &mut Vec<u8>) -> Result<()> {
+    // The Advanced Peripheral Bus (APB) is part of the Advanced Microcontroller Bus Architecture
+    // (AMBA) protocol family. It defines a low-cost interface that is optimized for minimal power
+    // consumption and reduced interface complexity.
+    // PCLK is the clock source and this node defines exactly the clock for the APB.
+    append_begin_node(fdt, "apb-pclk")?;
+    append_property_string(fdt, "compatible", "fixed-clock")?;
+    append_property_u32(fdt, "#clock-cells", 0x0)?;
+    append_property_u32(fdt, "clock-frequency", 24000000)?;
+    append_property_string(fdt, "clock-output-names", "clk24mhz")?;
+    append_property_u32(fdt, "phandle", CLOCK_PHANDLE)?;
     append_end_node(fdt)?;
 
     Ok(())
