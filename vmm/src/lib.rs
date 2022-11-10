@@ -2086,6 +2086,20 @@ impl Vmm {
         self.attach_legacy_devices_aarch64()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
+
+        // We need to check the addr of the attached devices
+
+        println!("Ta addresses twn mmio devices");
+
+        let mut mmio_devs = self.get_mmio_device_info();
+        // for (key,value) in &mmio_devs {
+            // println!("{} / {}", key, value);
+        // }
+        println!("{:?}", mmio_devs);
+
+        println!("Till here");
+        
+
         // println!("Perasa attach_legacy_devices_aarch64");
 
         if self.dump_dir.is_some() {
@@ -2139,6 +2153,12 @@ impl Vmm {
         if LOGGER.log_metrics().is_err() {
             METRICS.logger.missed_metrics_count.inc();
         }
+
+        // let vm_memory = self.vm.get_memory().unwrap();
+
+        // let (gfns_to_pfns, _) = memory_model::GuestMemory::get_pagemap(vm_memory, true);
+
+        // println!("{:?}", gfns_to_pfns);
 
         Ok(VmmData::Empty)
     }

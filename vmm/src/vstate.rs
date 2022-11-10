@@ -715,14 +715,14 @@ impl Vcpu {
         Ok(())
     }
 
-    fn check_boot_complete_signal(&self, addr: u64, data: &[u8]) {
-        if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
-            && data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
-        {
-            println!("BOOTARAME!!!!!!!!!!!!!!!!!!!!!!!!!");
-            super::Vmm::log_boot_time(&self.create_ts);
-        }
-    }
+    // fn check_boot_complete_signal(&self, addr: u64, data: &[u8]) {
+        // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE
+            //&& data[0] == MAGIC_VALUE_SIGNAL_GUEST_BOOT_COMPLETE
+        // {
+            // println!("BOOTARAME!!!!!!!!!!!!!!!!!!!!!!!!!");
+            // super::Vmm::log_boot_time(&self.create_ts);
+        // }
+    // }
 
     fn run_emulation(&mut self,
                      snap_barrier: &Arc<Barrier>,
@@ -786,6 +786,11 @@ impl Vcpu {
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         // TODO:
                         //remove as_ref
+
+                        if addr == (1073762304 as u64) && data[0] != 0 && data[0] != 1 && data[0] != 15 {
+                            println!("Snapshot command");
+                        }
+
                         mmio_bus.read(addr, data);
                         METRICS.vcpu.exit_mmio_read.inc();
                     }
@@ -799,7 +804,21 @@ impl Vcpu {
                         // TODO:
                         //remove as_ref
                         // add check_boot_complete_signal()
-                        self.check_boot_complete_signal(addr, data);
+
+                        // self.check_boot_complete_signal(addr, data);
+
+                        // println!("{:?}",addr);
+                        // if addr == (1073758308 as u64) {
+                            // println!("VSOCK0");
+                        // }
+
+                        // if addr == (1073762304 as u64) {
+                            // println!("SERIAL");
+                        // }
+
+                        // if addr == (1073766400 as u64) {
+                            // println!("RTC0");
+                        // }
 
                         mmio_bus.write(addr, data);
                         METRICS.vcpu.exit_mmio_write.inc();
@@ -808,6 +827,7 @@ impl Vcpu {
                 }
                 VcpuExit::Hlt => {
                     info!("Received KVM_EXIT_HLT signal");
+                    println!("Received KVM_EXIT_HLT signal");
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 VcpuExit::Shutdown => {
