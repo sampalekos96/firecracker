@@ -299,11 +299,14 @@ impl Vm {
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
-            let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
-                KVM_MEM_LOG_DIRTY_PAGES
-            } else {
-                0
-            };
+            // let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
+                // KVM_MEM_LOG_DIRTY_PAGES
+            // } else {
+                // 0
+            // };
+
+            let flags = KVM_MEM_LOG_DIRTY_PAGES;
+
             let memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
                 guest_phys_addr: guest_addr.offset() as u64,
@@ -328,7 +331,7 @@ impl Vm {
         match self.guest_mem.as_ref().unwrap().snapshot_memory(dir) {
             Ok(r) => Some(r),
             Err(e) => {
-                eprintln!("failed to dump initialized memory: {:?}", e);
+                println!("failed to dump initialized memory: {:?}", e);
                 None
             },
         }
@@ -784,11 +787,24 @@ impl Vcpu {
                 VcpuExit::MmioRead(addr, data) => {
                     // println!("VCPUEXIT: MmioRead");
                     if let Some(ref mmio_bus) = self.mmio_bus {
-                        // TODO:
-                        //remove as_ref
 
-                        if addr == (1073762304 as u64) && data[0] != 0 && data[0] != 1 && data[0] != 15 {
-                            println!("Snapshot command");
+                        if addr == (1073766400 as u64) && data[0] != 0 && data[0] != 1 && data[0] != 15 {
+                            println!("vcpu {} signaled", self.id);
+
+                            if let Some(ref sender) = snap_sender {
+                                // Remove, we want first to check memory dump is working
+
+                                // let mut vcpu_state = VcpuState::default();
+                                // self.dump_vcpu_state(&mut vcpu_state)?;
+                                // sender.send(VcpuInfo{
+                                    // id: self.id,
+                                    // state: vcpu_state,
+                                // }).expect("Failed sending vcpu state");
+                                
+                                vcpu_snap_evt.write(1).expect("Failed signaling vcpu snap event");
+                                snap_barrier.wait();
+                                return Err(Error::VcpuUnhandledKvmExit);
+                            }
                         }
 
                         mmio_bus.read(addr, data);
@@ -797,29 +813,7 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::MmioWrite(addr, data) => {
-                    // println!("VCPUEXIT: MmioWrite");
-                    // let data_from_user = String::from_utf8_lossy(data);
-                    // println!("{}",data_from_user);
                     if let Some(ref mmio_bus) = self.mmio_bus {
-                        // TODO:
-                        //remove as_ref
-                        // add check_boot_complete_signal()
-
-                        // self.check_boot_complete_signal(addr, data);
-
-                        // println!("{:?}",addr);
-                        // if addr == (1073758308 as u64) {
-                            // println!("VSOCK0");
-                        // }
-
-                        // if addr == (1073762304 as u64) {
-                            // println!("SERIAL");
-                        // }
-
-                        // if addr == (1073766400 as u64) {
-                            // println!("RTC0");
-                        // }
-
                         mmio_bus.write(addr, data);
                         METRICS.vcpu.exit_mmio_write.inc();
                     }

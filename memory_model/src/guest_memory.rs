@@ -119,6 +119,8 @@ impl GuestMemory {
                 }
             }
 
+            println!("To guest base{:?}", range.0);
+
             let mapping = MemoryMapping::new(range.1).map_err(Error::MemoryMappingFailed)?;
             regions.push(MemoryRegion {
                 mapping,
@@ -315,6 +317,9 @@ impl GuestMemory {
 
     // echo 4 > proc/PID/clear_refs
     fn clear_soft_dirty_bits() {
+
+        println!("Bika clear_soft_dirty_bits");
+
         let path = format!("/proc/{}/clear_refs", std::process::id());
         let mut proc_file = OpenOptions::new().write(true).open(path).expect("Failed to open /proc/PID/clear_refs");
         proc_file.write_all(b"4").expect("Failed to clear soft dirty bits");
@@ -329,6 +334,7 @@ impl GuestMemory {
         let mut dirty_list = Vec::new();
         let mut page_i_base = 0usize;
         for region in self.regions.iter() {
+            println!("to page_i_base: {}", page_i_base);
             let (mut partial_mapping, mut partial_dirty_list) =
                 region.mapping.get_pagemap(pfn_to_gfn, page_i_base, PAGE_SIZE);
             mapping.append(&mut partial_mapping);
@@ -382,6 +388,18 @@ impl GuestMemory {
     pub fn snapshot_memory(&self, mut dir: PathBuf) -> Result<BTreeSet<usize>>
     {
         let (gfns_to_pfns, gfns_dirty_vec) = self.get_pagemap(false);
+
+        // println!("Ta accessed pages");
+        // for (x, y) in &gfns_to_pfns {
+        //     println!("{x}: \"{y}\"");
+        // }
+
+        // println!("Ta written pages");
+        // let temp_iter = gfns_dirty_vec.iter();
+        // for val in temp_iter {
+        //     println!("page: {}", val);
+        // }
+
         // resident (dirty + read-only)
         let gfns_accessed_vec: Vec<_> = gfns_to_pfns.keys().cloned().collect();
         let gfns_accessed_set: BTreeSet<_> = gfns_accessed_vec.iter().cloned().collect();
@@ -441,6 +459,8 @@ impl GuestMemory {
         }
 
         self.generate_memory_dump(&gfns_dirty_vec, &mut memory_dump)?;
+
+        println!("PERASA GENERATE_MEMORY_DUMP");
 
         // write memory_dump_sparse
         self.write_from_memory(
@@ -846,6 +866,13 @@ impl GuestMemory {
     where
         F: Write,
     {
+        // println!("BIKA WRITE_FROM_MEMORY");
+
+        // println!("to guest_addr: {:?}", guest_addr);
+        // println!("to count: {:?}", count);
+
+        // println!("AYTA APO WRITE_FROM_MEMORY");
+
         self.do_in_region(guest_addr, count, move |mapping, offset| {
             mapping
                 .write_from_memory(offset, dst, count)
@@ -945,8 +972,12 @@ impl GuestMemory {
     {
         for region in self.regions.iter() {
             if guest_addr >= region.guest_base && guest_addr < region_end(region) {
+                // println!("BIKA 1h IF");
                 let offset = guest_addr.offset_from(region.guest_base);
+                // println!("TO REGION.MAPPING.SIZE(): {:?}", region.mapping.size());
+                // println!("TO OFFSET: {:?}", offset);
                 if size <= region.mapping.size() - offset {
+                    // println!("BIKA 2h IF");
                     return cb(&region.mapping, offset);
                 }
                 break;

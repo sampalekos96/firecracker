@@ -140,17 +140,38 @@ impl MemoryMapping {
         page_size: usize,
     ) -> (BTreeMap<usize, usize>, Vec<usize>) {
         let path = format!("/proc/{}/pagemap", std::process::id());
+
+        //DEBUG
+        // let path = format!("/proc/{}/pagemap", 200);
+
+        println!("to path: {}", path);
         let offset = (self.addr as usize)/page_size*PM_ENTRY_SIZE;
+        // let offset = 273944150016;
+        println!("to offset: {}", offset);
         let mut pagemap = File::open(&path).expect("Failed to open /proc/PID/pagemap");
         pagemap.seek(SeekFrom::Start(offset as u64)).expect("Failed to seek /proc/PID/pagemap");
 
         let num_pages = self.size / page_size;
+
+        println!("to num_pages: {}", num_pages);
+
         let mut buf = [0 as u8; 8];
         let mut mapping = BTreeMap::new();
         let mut dirty_list = Vec::new();
         for page_i in 0..num_pages {
             pagemap.read_exact(&mut buf).err();
             let entry = u64::from_le_bytes(buf);
+            // println!("to entry: {}", entry);
+
+            println!("DIADIKI APEIKONISI KATHE PTE");
+            for bit in 0..64 {
+                let temp = MemoryMapping::get_bit(entry, bit);
+                print!("{:?}", temp);
+                if bit == 63 {
+                    println!(" ");
+                }
+            }
+
             // check if the page is present
             if MemoryMapping::get_bit(entry, 63) == 1 {
                 let pfn = MemoryMapping::get_pfn(entry);

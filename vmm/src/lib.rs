@@ -603,8 +603,8 @@ impl EpollContext {
 
         for x in 0..count {
 
-            println!("Paw na pusharw EpollDispatch::DeviceHandler me device_idx:");
-            println!("{}", device_idx);
+            // println!("Paw na pusharw EpollDispatch::DeviceHandler me device_idx:");
+            // println!("{}", device_idx);
 
             self.dispatch_table.push(Some(EpollDispatch::DeviceHandler(
                 device_idx,
@@ -785,7 +785,7 @@ impl Drop for EpollContext {
 struct KernelConfig {
     cmdline: kernel_cmdline::Cmdline,
     kernel_file: File,
-    cmdline_addr: GuestAddress,
+    // cmdline_addr: GuestAddress,
 }
 
 struct Vmm {
@@ -1026,7 +1026,7 @@ impl Vmm {
                 if self.block_device_configs.has_read_only_root() {
                     kernel_config
                         .cmdline
-                        .insert_str("ro")
+                        .insert_str("ro,norecovery")
                         .map_err(|e| StartMicrovmError::KernelCmdline(e.to_string()))?;
                 } else {
                     kernel_config
@@ -1351,7 +1351,7 @@ impl Vmm {
         Ok(VmmData::Empty)
     }
 
-    #[cfg(target_arch = "x86_64")]
+    // #[cfg(target_arch = "x86_64")]
     fn log_dirty_pages(&mut self) {
         // If we're logging dirty pages, post the metrics on how many dirty pages there are.
         if LOGGER.flags() | LogOption::LogDirtyPages as usize > 0 {
@@ -1361,7 +1361,7 @@ impl Vmm {
 
     fn write_metrics(&mut self) -> result::Result<(), LoggerError> {
         // The dirty pages are only available on x86_64.
-        #[cfg(target_arch = "x86_64")]
+        // #[cfg(target_arch = "x86_64")]
         self.log_dirty_pages();
         LOGGER.log_metrics()
     }
@@ -1375,6 +1375,9 @@ impl Vmm {
             ))?
             << 20;
         let arch_mem_regions = arch::aarch64::arch_memory_regions(mem_size);
+
+        println!("arch_mem_regions: {:?}", arch_mem_regions);
+
         if !self.load_dir.is_empty() {
             self.guest_memory =
                 Some(GuestMemory::new_from_snapshot(
@@ -2386,11 +2389,12 @@ impl Vmm {
                             }
                         }
                         EpollDispatch::Snap => {
+                            println!("Egine trigger to snap event");
                             self.snap_evt.read().map_err(Error::EventFd)?;
                             vcpu_snap_cnt += 1;
-                            let info = self.snap_receiver.as_ref().unwrap().recv().unwrap();
-                            self.snap_to_dump.as_mut().unwrap().vcpu_states[info.id as usize]
-                                = info.state;
+                            // let info = self.snap_receiver.as_ref().unwrap().recv().unwrap();
+                            // self.snap_to_dump.as_mut().unwrap().vcpu_states[info.id as usize]
+                                // = info.state;
                             if vcpu_snap_cnt == self.vcpus_handles.len() {
                                 exit_on_dump = true;
                             }
@@ -2399,6 +2403,7 @@ impl Vmm {
                 }
             }
             if exit_on_dump {
+                println!("Bikame exit_on_dump");
                 let snapshot = self.snap_to_dump.as_mut().unwrap();
                 // dump block device state, assume all block devices are attached first
                 for i in 0..self.drive_handler_id_map.len() {
@@ -2407,6 +2412,8 @@ impl Vmm {
                         self.epoll_context.get_device_handler(i).unwrap().get_queues();
 
                 }
+                println!("Kaname save ta block states");
+
                 // dump network device state, assume network devices are attached after all block
                 // devices
                 for i in 0..self.net_handler_id_map.len() {
@@ -2416,16 +2423,19 @@ impl Vmm {
                             .unwrap().get_queues();
 
                 }
+                println!("Kaname save ta net states");
+
                 // dump vsock state, assume vsock is the last attached virtio device
 
                 snapshot.vsock_state.queues = self.epoll_context.get_device_handler(
                     self.drive_handler_id_map.len() + self.net_handler_id_map.len())
                     .unwrap().get_queues();
+                println!("Kaname save ta Vsock states");
 
                 // dump irqchip state
                 self.vm.dump_irqchip(snapshot).map_err(|e| Error::SaveSnapshot(e))?;
 
-                //println!("snapshotting memory...");
+                println!("snapshotting memory...");
                 if let Some(dirty_pages_set) = self.vm.dump_initialized_memory_to_file(
                     self.dump_dir.as_ref().unwrap().clone()) {
                     let mut new_memory_meta = if self.load_dir.is_empty() {
@@ -2442,13 +2452,15 @@ impl Vmm {
 
                     let snap_str = serde_json::to_string(self.snap_to_dump.as_ref().unwrap()).unwrap();
                     self.dump_dir.as_mut().unwrap().push("snapshot.json");
-                    //println!("writing meta to {:?}", self.dump_dir);
+
+                    println!("writing meta to {:?}", self.dump_dir);
+
                     std::fs::write(self.dump_dir.as_ref().unwrap(), snap_str)
                         .map_err(|e| Error::SaveSnapshot(e))?;
 
                     println!("VMM: Snapshot creation succeeds");
                 } else {
-                    eprintln!("Snapshot creation failed.");
+                    println!("Snapshot creation failed.");
                 }
 
 
@@ -2460,7 +2472,7 @@ impl Vmm {
     // Count the number of pages dirtied since the last call to this function.
     // Because this is used for metrics, it swallows most errors and simply doesn't count dirty
     // pages if the KVM operation fails.
-    #[cfg(target_arch = "x86_64")]
+    // #[cfg(target_arch = "x86_64")]
     fn get_dirty_page_count(&mut self) -> usize {
         if let Some(ref mem) = self.guest_memory {
             let dirty_pages = mem.map_and_fold(
@@ -2571,7 +2583,7 @@ impl Vmm {
         let kernel_config = KernelConfig {
             kernel_file,
             cmdline,
-            cmdline_addr: GuestAddress(arch::aarch64::layout::CMDLINE_START),   //doesn't matter
+            // cmdline_addr: GuestAddress(arch::aarch64::layout::CMDLINE_START),   //doesn't matter
         };
 
         // println!("Pira kernel configuration");
@@ -3211,7 +3223,7 @@ mod tests {
             let kernel_cfg = KernelConfig {
                 cmdline,
                 kernel_file,
-                cmdline_addr: GuestAddress(arch::arch64::CMDLINE_START),
+                // cmdline_addr: GuestAddress(arch::arch64::CMDLINE_START),
             };
             self.configure_kernel(kernel_cfg);
         }

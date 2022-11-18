@@ -533,8 +533,11 @@ impl VmFd {
     /// * `slot` - Guest memory slot identifier.
     /// * `memory_size` - Size of the memory region.
     ///
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn get_dirty_log(&self, slot: u32, memory_size: usize) -> Result<Vec<u64>> {
+
+        println!("BIKA KVM get_dirty_log");
+
         // Compute the length of the bitmap needed for all dirty pages in one memory slot.
         // One memory page is 4KiB (4096 bits) and KVM_GET_DIRTY_LOG returns one dirty bit for
         // each page.
