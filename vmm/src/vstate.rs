@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn create_vm() {
         let kvm = KvmContext::new().unwrap();
-        let gm = GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
+        // let gm = GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
         let mut vm = Vm::new(kvm.fd()).expect("new vm failed");
         assert!(vm.memory_init(gm, &kvm).is_ok());
     }
@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn get_memory() {
         let kvm = KvmContext::new().unwrap();
-        let gm = GuestMemory::new(&[(GuestAddress(0), 0x1000)]).unwrap();
+        // let gm = GuestMemory::new(&[(GuestAddress(0), 0x1000)]).unwrap();
         let mut vm = Vm::new(kvm.fd()).expect("new vm failed");
         assert!(vm.memory_init(gm, &kvm).is_ok());
         let obj_addr = GuestAddress(0xf0);
@@ -952,25 +952,25 @@ mod tests {
 
     fn setup_vcpu() -> (Vm, Vcpu) {
         let kvm = KvmContext::new().unwrap();
-        let gm = GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
+        // let gm = GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
         let mut vm = Vm::new(kvm.fd()).expect("new vm failed");
         assert!(vm.memory_init(gm, &kvm).is_ok());
         let dummy_eventfd_1 = EventFd::new().unwrap();
         let dummy_eventfd_2 = EventFd::new().unwrap();
         let dummy_kbd_eventfd = EventFd::new().unwrap();
 
-        vm.setup_irqchip(&dummy_eventfd_1, &dummy_eventfd_2, &dummy_kbd_eventfd)
-            .unwrap();
+        // vm.setup_irqchip(&dummy_eventfd_1, &dummy_eventfd_2, &dummy_kbd_eventfd)
+            // .unwrap();
         vm.create_pit().unwrap();
 
-        let vcpu = Vcpu::new(
-            1,
-            &vm,
-            devices::Bus::new(),
-            devices::Bus::new(),
-            super::super::TimestampUs::default(),
-        )
-        .unwrap();
+        // let vcpu = Vcpu::new(
+            // 1,
+            // &vm,
+            // devices::Bus::new(),
+            // devices::Bus::new(),
+            // super::super::TimestampUs::default(),
+        // )
+        // .unwrap();
 
         (vm, vcpu)
     }
@@ -981,17 +981,17 @@ mod tests {
         let (vm, mut vcpu) = setup_vcpu();
 
         let vm_config = VmConfig::default();
-        assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
+        // assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
 
         // Test configure while using the T2 template.
         let mut vm_config = VmConfig::default();
         vm_config.cpu_template = Some(CpuFeaturesTemplate::T2);
-        assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
+        // assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
 
         // Test configure while using the C3 template.
         let mut vm_config = VmConfig::default();
         vm_config.cpu_template = Some(CpuFeaturesTemplate::C3);
-        assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
+        // assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1011,7 +1011,7 @@ mod tests {
         let (vm, mut vcpu) = setup_vcpu();
 
         let vm_config = VmConfig::default();
-        assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
+        // assert!(vcpu.configure(&vm_config, GuestAddress(0), &vm).is_ok());
 
         let thread_barrier = Arc::new(Barrier::new(2));
         let exit_evt = EventFd::new().unwrap();
@@ -1020,12 +1020,12 @@ mod tests {
         let vcpu_exit_evt = exit_evt.try_clone().expect("eventfd clone failed");
         let seccomp_level = 0;
 
-        let thread = thread::Builder::new()
-            .name("fc_vcpu0".to_string())
-            .spawn(move || {
-                vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt);
-            })
-            .expect("failed to spawn thread ");
+        // let thread = thread::Builder::new()
+            // .name("fc_vcpu0".to_string())
+            // .spawn(move || {
+                // vcpu.run(vcpu_thread_barrier, seccomp_level, vcpu_exit_evt);
+            // })
+            // .expect("failed to spawn thread ");
 
         thread_barrier.wait();
 
@@ -1054,7 +1054,7 @@ mod tests {
         };
         let start_addr1 = GuestAddress(0x0);
         let start_addr2 = GuestAddress(0x1000);
-        let gm = GuestMemory::new(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
+        // let gm = GuestMemory::new(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
 
         assert!(vm.memory_init(gm, &kvm).is_err());
     }

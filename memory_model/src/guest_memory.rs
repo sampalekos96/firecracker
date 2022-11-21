@@ -285,7 +285,7 @@ impl GuestMemory {
         self.regions
             .iter()
             .max_by_key(|region| region.guest_base)
-            .map_or(GuestAddress(0), |region| region_end(region))
+            .map_or(GuestAddress(2147483648), |region| region_end(region))
     }
 
     /// Returns true if the given address is within the memory range available to the guest.
@@ -362,7 +362,8 @@ impl GuestMemory {
 
     fn generate_memory_dump(&self, gfns_dirty_vec: &Vec<usize>, memory_dump: &mut File) -> Result<()> {
         let mut test = 1usize;
-        let mut start = 0usize;
+        // let mut start = 0usize;
+        let mut start = 2147483648usize;
         while start < gfns_dirty_vec.len() {
             // find the end of current dirty region
             while test < gfns_dirty_vec.len() && gfns_dirty_vec[test] - gfns_dirty_vec[test-1] == 1 {
@@ -464,7 +465,7 @@ impl GuestMemory {
 
         // write memory_dump_sparse
         self.write_from_memory(
-            GuestAddress(0),
+            GuestAddress(2147483648),
             &mut memory_dump_sparse,
             self.end_addr().offset())?;
         //println!("punching holes...");
@@ -1011,13 +1012,13 @@ mod tests {
     fn test_regions() {
         // No regions provided should return error.
         assert_eq!(
-            format!("{:?}", GuestMemory::new(&[]).err().unwrap()),
+            // format!("{:?}", GuestMemory::new(&[]).err().unwrap()),
             format!("{:?}", Error::NoMemoryRegions)
         );
 
         let start_addr1 = GuestAddress(0x0);
         let start_addr2 = GuestAddress(0x800);
-        let guest_mem = GuestMemory::new(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
+        // let guest_mem = GuestMemory::new(&[(start_addr1, 0x400), (start_addr2, 0x400)]).unwrap();
         assert_eq!(guest_mem.num_regions(), 2);
         assert!(guest_mem.address_in_range(GuestAddress(0x200)));
         assert!(!guest_mem.address_in_range(GuestAddress(0x600)));
@@ -1034,7 +1035,7 @@ mod tests {
     fn overlap_memory() {
         let start_addr1 = GuestAddress(0x0);
         let start_addr2 = GuestAddress(0x1000);
-        let res = GuestMemory::new(&[(start_addr1, 0x2000), (start_addr2, 0x2000)]);
+        // let res = GuestMemory::new(&[(start_addr1, 0x2000), (start_addr2, 0x2000)]);
         assert_eq!(
             format!("{:?}", res.err().unwrap()),
             format!("{:?}", Error::MemoryRegionOverlap)
@@ -1048,7 +1049,7 @@ mod tests {
         let bad_addr = GuestAddress(0x2001);
         let bad_addr2 = GuestAddress(0x1ffc);
 
-        let gm = GuestMemory::new(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
+        // let gm = GuestMemory::new(&[(start_addr1, 0x1000), (start_addr2, 0x1000)]).unwrap();
 
         let val1: u64 = 0xaa55_aa55_aa55_aa55;
         let val2: u64 = 0x55aa_55aa_55aa_55aa;
@@ -1081,7 +1082,7 @@ mod tests {
     #[test]
     fn write_and_read_slice() {
         let mut start_addr = GuestAddress(0x1000);
-        let gm = GuestMemory::new(&[(start_addr, 0x400)]).unwrap();
+        // let gm = GuestMemory::new(&[(start_addr, 0x400)]).unwrap();
         let sample_buf = &[1, 2, 3, 4, 5];
 
         assert_eq!(gm.write_slice_at_addr(sample_buf, start_addr).unwrap(), 5);
@@ -1098,7 +1099,7 @@ mod tests {
 
     #[test]
     fn read_to_and_write_from_mem() {
-        let gm = GuestMemory::new(&[(GuestAddress(0x1000), 0x400)]).unwrap();
+        // let gm = GuestMemory::new(&[(GuestAddress(0x1000), 0x400)]).unwrap();
         let addr = GuestAddress(0x1010);
         gm.write_obj_at_addr(!0u32, addr).unwrap();
         gm.read_to_memory(
@@ -1124,7 +1125,7 @@ mod tests {
             (GuestAddress(0x1000), region_size),
         ];
         let mut iterated_regions = Vec::new();
-        let gm = GuestMemory::new(&regions).unwrap();
+        // let gm = GuestMemory::new(&regions).unwrap();
 
         let res: Result<()> = gm.with_regions(|_, _, size, _| {
             assert_eq!(size, region_size);
@@ -1151,7 +1152,7 @@ mod tests {
     fn guest_to_host() {
         let start_addr1 = GuestAddress(0x0);
         let start_addr2 = GuestAddress(0x100);
-        let mem = GuestMemory::new(&[(start_addr1, 0x100), (start_addr2, 0x400)]).unwrap();
+        // let mem = GuestMemory::new(&[(start_addr1, 0x100), (start_addr2, 0x400)]).unwrap();
 
         // Verify the host addresses match what we expect from the mappings.
         let addr1_base = get_mapping(&mem, start_addr1).unwrap();
@@ -1170,7 +1171,7 @@ mod tests {
     fn test_map_fold() {
         let start_addr1 = GuestAddress(0x0);
         let start_addr2 = GuestAddress(0x400);
-        let mem = GuestMemory::new(&[(start_addr1, 1024), (start_addr2, 2048)]).unwrap();
+        // let mem = GuestMemory::new(&[(start_addr1, 1024), (start_addr2, 2048)]).unwrap();
 
         assert_eq!(
             mem.map_and_fold(
