@@ -27,7 +27,7 @@ use arch::aarch64::fdt::DeviceInfoForFDT;
 use cpuid::{c3, filter_cpuid, t2};
 use default_syscalls;
 use kvm::*;
-use kvm_bindings::{ kvm_regs, kvm_irqchip,
+use kvm_bindings::{ kvm_one_reg, kvm_irqchip,
     kvm_mp_state, kvm_vcpu_events,
     // KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE, //we need to replace them with the correct 
     kvm_hyperv_exit__bindgen_ty_1__bindgen_ty_1,
@@ -107,6 +107,8 @@ pub enum Error {
     VcpuArmInit(io::Error),
     REGSConfiguration(arch::aarch64::regs::Error),
     SetupGIC(arch::aarch64::gic::Error),
+    SaveState(arch::aarch64::regs::Error),
+    RestoreState(arch::aarch64::regs::Error),
 }
 pub type Result<T> = result::Result<T, Error>;
 
@@ -120,7 +122,8 @@ impl ::std::convert::From<io::Error> for Error {
 pub struct VcpuState {
     pub vcpu_events: kvm_vcpu_events,
     pub mp_state: kvm_mp_state,
-    pub regs: kvm_regs,
+    pub regs: Vec<kvm_one_reg>,
+    pub mpidr: u64,
     // pub xsave_region: Vec<std::os::raw::c_uint>,
     // pub xcrs: kvm_xcrs,
     // pub sregs: kvm_sregs,
@@ -500,6 +503,7 @@ impl Vcpu {
         vm_fd: &VmFd,
         guest_mem: &GuestMemory,
         kernel_load_addr: GuestAddress,
+        // maybe_vcpu_state: Option<&VcpuState>,
     ) -> Result<()> {
 
         // let vm_memory = vm
@@ -529,6 +533,31 @@ impl Vcpu {
     }
 
 
+    pub fn save_state(&self) -> Result<VcpuState> {
+        // Err(Error::UnsupportedAction("Saving the state"))
+        let mut state = VcpuState::default();
+
+        // Get this vCPUs multiprocessing state.
+        state.mp_state = arch::regs::get_mpstate(&self.fd).map_err(Error::SaveState)?;
+
+        arch::regs::save_core_registers(&self.fd, &mut state.regs).map_err(Error::SaveState)?;
+
+        arch::regs::save_system_registers(&self.fd, &mut state.regs).map_err(Error::SaveState)?;
+
+        state.mpidr = arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::SaveState)?;
+
+        Ok(state)
+    }
+
+    pub fn restore_state(&self, state: &VcpuState) -> Result<()> {
+        arch::regs::restore_registers(&self.fd, &state.regs).map_err(Error::RestoreState)?;
+
+        arch::regs::set_mpstate(&self.fd, state.mp_state).map_err(Error::RestoreState)?;
+
+        Ok(())
+    }
+
+
     pub fn get_mpidr(&self) -> u64 {
         self.mpidr
     }
@@ -537,11 +566,6 @@ impl Vcpu {
     pub fn set_mmio_bus(&mut self, mmio_bus: devices::Bus) {
         self.mmio_bus = Some(mmio_bus);
     }
-
-
-    // pub fn get_mpidr(&self) -> u64 {
-        // self.mpidr
-    // }
 
 
     // fn get_msrs(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
@@ -589,9 +613,9 @@ impl Vcpu {
     //     self.fd.set_msrs(msrs)
     // }
 
-    fn load_vcpu_state(&self, vcpu_state: &VcpuState) -> result::Result<(), io::Error> {
+    // fn load_vcpu_state(&self, vcpu_state: &VcpuState) -> result::Result<(), io::Error> {
 
-        self.fd.set_regs(&vcpu_state.regs)?;
+        // self.fd.set_regs(&vcpu_state.regs)?;
 
         // let region_vec = &vcpu_state.xsave_region;
         // let mut region = [0 as std::os::raw::c_uint; 1024usize];
@@ -632,19 +656,19 @@ impl Vcpu {
         // msrs.nmsrs = 1;
         // self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
 
-        self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
+        // self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
 
-        self.fd.set_mp_state(&vcpu_state.mp_state)?;
+        // self.fd.set_mp_state(&vcpu_state.mp_state)?;
 
-        Ok(())
-    }
+        // Ok(())
+    // }
 
-    fn dump_vcpu_state(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
-        vcpu_state.vcpu_events = self.fd.get_vcpu_events()?;
+    // fn dump_vcpu_state(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
+        // vcpu_state.vcpu_events = self.fd.get_vcpu_events()?;
 
-        vcpu_state.mp_state = self.fd.get_mp_state()?;
+        // vcpu_state.mp_state = self.fd.get_mp_state()?;
 
-        vcpu_state.regs = self.fd.get_regs()?;
+        // vcpu_state.regs = self.fd.get_regs()?;
 
         // let xsave = self.fd.get_xsave()?;
         // vcpu_state.xsave_region = xsave.region.to_vec();
@@ -658,10 +682,10 @@ impl Vcpu {
         // let lapic = self.fd.get_lapic()?;
         // vcpu_state.lapic_regs = lapic.regs.to_vec();
 
-        Ok(())
-    }
+        // Ok(())
+    // }
 
-    #[cfg(target_arch = "x86_64")]
+    // #[cfg(target_arch = "x86_64")]
     /// Configures a x86_64 specific vcpu and should be called once per vcpu from the vcpu's thread.
     ///
     /// # Arguments
@@ -669,54 +693,54 @@ impl Vcpu {
     /// * `machine_config` - Specifies necessary info used for the CPUID configuration.
     /// * `kernel_start_addr` - Offset from `guest_mem` at which the kernel starts.
     /// * `vm` - The virtual machine this vcpu will get attached to.
-    pub fn configure(
-        &mut self,
-        machine_config: &VmConfig,
-        kernel_start_addr: GuestAddress,
-        vm: &Vm,
-        maybe_vcpu_state: Option<&VcpuState>,
-    ) -> Result<()> {
-        // the MachineConfiguration has defaults for ht_enabled and vcpu_count hence it is safe to unwrap
-        filter_cpuid(
-            self.id,
-            machine_config
-                .vcpu_count
-                .ok_or(Error::VcpuCountNotInitialized)?,
-            machine_config.ht_enabled.ok_or(Error::HTNotInitialized)?,
-            &mut self.cpuid,
-        )
-        .map_err(Error::CpuId)?;
+    // pub fn configure(
+    //     &mut self,
+    //     machine_config: &VmConfig,
+    //     kernel_start_addr: GuestAddress,
+    //     vm: &Vm,
+    //     maybe_vcpu_state: Option<&VcpuState>,
+    // ) -> Result<()> {
+    //     // the MachineConfiguration has defaults for ht_enabled and vcpu_count hence it is safe to unwrap
+    //     filter_cpuid(
+    //         self.id,
+    //         machine_config
+    //             .vcpu_count
+    //             .ok_or(Error::VcpuCountNotInitialized)?,
+    //         machine_config.ht_enabled.ok_or(Error::HTNotInitialized)?,
+    //         &mut self.cpuid,
+    //     )
+    //     .map_err(Error::CpuId)?;
 
-        if let Some(template) = machine_config.cpu_template {
-            match template {
-                CpuFeaturesTemplate::T2 => t2::set_cpuid_entries(self.cpuid.mut_entries_slice()),
-                CpuFeaturesTemplate::C3 => c3::set_cpuid_entries(self.cpuid.mut_entries_slice()),
-            }
-        }
+    //     if let Some(template) = machine_config.cpu_template {
+    //         match template {
+    //             CpuFeaturesTemplate::T2 => t2::set_cpuid_entries(self.cpuid.mut_entries_slice()),
+    //             CpuFeaturesTemplate::C3 => c3::set_cpuid_entries(self.cpuid.mut_entries_slice()),
+    //         }
+    //     }
 
-        self.fd
-            .set_cpuid2(&self.cpuid)
-            .map_err(Error::SetSupportedCpusFailed)?;
+    //     self.fd
+    //         .set_cpuid2(&self.cpuid)
+    //         .map_err(Error::SetSupportedCpusFailed)?;
 
-        if let Some(vcpu_state) = maybe_vcpu_state {
-            let start = now_monotime_us();
-            self.load_vcpu_state(vcpu_state).map_err(|e| Error::LoadSnapshot(e))?;
-            let end = now_monotime_us();
-            info!("loading registers took {}us", end-start);
-        } else {
-            arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
-            // Safe to unwrap because this method is called after the VM is configured
-            let vm_memory = vm
-                .get_memory()
-                .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
-            arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.offset() as u64)
-                .map_err(Error::REGSConfiguration)?;
-            arch::x86_64::regs::setup_sregs(vm_memory, &self.fd).map_err(Error::SREGSConfiguration)?;
-            arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
-            arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
-        }
-        Ok(())
-    }
+    //     if let Some(vcpu_state) = maybe_vcpu_state {
+    //         let start = now_monotime_us();
+    //         self.load_vcpu_state(vcpu_state).map_err(|e| Error::LoadSnapshot(e))?;
+    //         let end = now_monotime_us();
+    //         info!("loading registers took {}us", end-start);
+    //     } else {
+    //         arch::x86_64::regs::setup_msrs(&self.fd).map_err(Error::MSRSConfiguration)?;
+    //         // Safe to unwrap because this method is called after the VM is configured
+    //         let vm_memory = vm
+    //             .get_memory()
+    //             .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
+    //         arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.offset() as u64)
+    //             .map_err(Error::REGSConfiguration)?;
+    //         arch::x86_64::regs::setup_sregs(vm_memory, &self.fd).map_err(Error::SREGSConfiguration)?;
+    //         arch::x86_64::regs::setup_fpu(&self.fd).map_err(Error::FPUConfiguration)?;
+    //         arch::x86_64::interrupts::set_lint(&self.fd).map_err(Error::LocalIntConfiguration)?;
+    //     }
+    //     Ok(())
+    // }
 
     // fn check_boot_complete_signal(&self, addr: u64, data: &[u8]) {
         // if addr == MAGIC_IOPORT_SIGNAL_GUEST_BOOT_COMPLETE

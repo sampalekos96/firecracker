@@ -30,6 +30,7 @@ use std::result;
 use libc::{open, EINVAL, O_CLOEXEC, O_RDWR};
 
 use kvm_bindings::*;
+use kvm_bindings::arm64::fam_wrappers::RegList;
 use sys_util::EventFd;
 use sys_util::{
     ioctl, ioctl_with_mut_ptr, ioctl_with_mut_ref, ioctl_with_ptr, ioctl_with_ref, ioctl_with_val,
@@ -909,6 +910,15 @@ impl VcpuFd {
         } else {
             Err(io::Error::last_os_error())
         }
+    }
+
+    pub fn get_reg_list(&self, reg_list: &mut RegList) -> Result<()> {
+        let ret =
+            unsafe { ioctl_with_mut_ref(self, KVM_GET_REG_LIST(), reg_list.as_mut_fam_struct()) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// Gets the VCPU registers using the `KVM_GET_REGS` ioctl.

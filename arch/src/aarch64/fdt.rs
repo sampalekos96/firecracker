@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn test_create_fdt() {
         let regions = arch_memory_regions(layout::FDT_MAX_SIZE + 0x1000);
-        let mem = GuestMemory::new(&regions).expect("Cannot initialize memory");
+        // let mem = GuestMemory::new(&regions).expect("Cannot initialize memory");
         let dev_info: HashMap<String, MMIODeviceInfo> = [
             (
                 "uart".to_string(),
@@ -599,8 +599,8 @@ mod tests {
         .iter()
         .cloned()
         .collect();
-        let mut dtb =
-            create_fdt(&mem, 1, &CString::new("console=tty0").unwrap(), &dev_info).unwrap();
+        // let mut dtb =
+            // create_fdt(&mem, 1, &CString::new("console=tty0").unwrap(), &dev_info).unwrap();
 
         /* Use this code when wanting to generate a new DTB sample.
         {
