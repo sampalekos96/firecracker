@@ -299,13 +299,13 @@ impl Vm {
         guest_mem.with_regions(|index, guest_addr, size, host_addr| {
             info!("Guest memory starts at {:x?}", host_addr);
 
-            // let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
-                // KVM_MEM_LOG_DIRTY_PAGES
-            // } else {
-                // 0
-            // };
+            let flags = if LOGGER.flags() & LogOption::LogDirtyPages as usize > 0 {
+                KVM_MEM_LOG_DIRTY_PAGES
+            } else {
+                0
+            };
 
-            let flags = KVM_MEM_LOG_DIRTY_PAGES;
+            // let flags = KVM_MEM_LOG_DIRTY_PAGES;
 
             let memory_region = kvm_userspace_memory_region {
                 slot: index as u32,
@@ -414,7 +414,7 @@ impl Vm {
             let start = now_monotime_us();
             // self.load_irqchip(snapshot).map_err(|e| Error::LoadSnapshot(e))?;
             let end = now_monotime_us();
-            info!("restoring irqchip took {}us", end-start);
+            println!("restoring irqchip took {}us", end-start);
         }
 
         Ok(())
@@ -788,7 +788,7 @@ impl Vcpu {
                     // println!("VCPUEXIT: MmioRead");
                     if let Some(ref mmio_bus) = self.mmio_bus {
 
-                        if addr == (1073766400 as u64) && data[0] != 0 && data[0] != 1 && data[0] != 15 {
+                        if addr == (1073762304 as u64) && data[0] != 0 && data[0] != 1 && data[0] != 15 {
                             println!("vcpu {} signaled", self.id);
 
                             if let Some(ref sender) = snap_sender {
@@ -813,6 +813,7 @@ impl Vcpu {
                     Ok(())
                 }
                 VcpuExit::MmioWrite(addr, data) => {
+                    // println!("VCPUEXIT: MmioWrite");
                     if let Some(ref mmio_bus) = self.mmio_bus {
                         mmio_bus.write(addr, data);
                         METRICS.vcpu.exit_mmio_write.inc();
@@ -832,11 +833,13 @@ impl Vcpu {
                 // errors.
                 VcpuExit::FailEntry(reason) => {
                     METRICS.vcpu.failures.inc();
+                    println!("Received KVM_EXIT_FAIL_ENTRY signal with reason: 0x{:x}", reason);
                     error!("Received KVM_EXIT_FAIL_ENTRY signal with reason: 0x{:x}", reason);
                     Err(Error::VcpuUnhandledKvmExit)
                 }
                 VcpuExit::InternalError(suberror, _data) => {
                     METRICS.vcpu.failures.inc();
+                    println!("Received KVM_EXIT_INTERNAL_ERROR signal with suberror: 0x{:x}", suberror);
                     error!("Received KVM_EXIT_INTERNAL_ERROR signal with suberror: 0x{:x}", suberror);
                     Err(Error::VcpuUnhandledKvmExit)
                 }

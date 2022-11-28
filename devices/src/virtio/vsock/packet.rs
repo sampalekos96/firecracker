@@ -106,7 +106,7 @@ fn get_host_address(
         // This is safe; `do_in_region` already checks that offset is in
         // bounds.
         Ok(unsafe { mapping.as_ptr().add(offset) } as *mut u8)
-    })
+    }, false)
 }
 
 impl VsockPacket {

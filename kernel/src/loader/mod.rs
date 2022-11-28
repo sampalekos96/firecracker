@@ -269,9 +269,9 @@ mod tests {
 
     const MEM_SIZE: usize = 0x18_0000;
 
-    fn create_guest_mem() -> GuestMemory {
-        GuestMemory::new(&[(GuestAddress(0x0), MEM_SIZE)]).unwrap()
-    }
+    // fn create_guest_mem() -> GuestMemory {
+    //     GuestMemory::new(&[(GuestAddress(0x0), MEM_SIZE)]).unwrap()
+    // }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn make_test_bin() -> Vec<u8> {
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_load_kernel_no_memory() {
-        let gm = GuestMemory::new(&[(GuestAddress(0x0), 79)]).unwrap();
+        // let gm = GuestMemory::new(&[(GuestAddress(0x0), 79)]).unwrap();
         let image = make_test_bin();
         assert_eq!(
             Err(Error::ReadKernelImage),

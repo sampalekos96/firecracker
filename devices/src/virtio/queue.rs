@@ -205,7 +205,7 @@ impl<'a, 'b> Iterator for AvailIter<'a, 'b> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 /// A virtio queue's parameters.
 pub struct Queue {
     /// The maximal size in elements offered by the device
@@ -696,7 +696,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_checked_new_descriptor_chain() {
-        let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
+        // let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
         let vq = VirtQueue::new(GuestAddress(0), m, 16);
 
         assert!(vq.end().0 < 0x1000);
@@ -755,7 +755,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_queue_and_iterator() {
-        let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
+        // let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
         let vq = VirtQueue::new(GuestAddress(0), m, 16);
 
         let mut q = vq.create_queue();
@@ -860,7 +860,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_add_used() {
-        let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
+        // let m = &GuestMemory::new(&[(GuestAddress(0), 0x10000)]).unwrap();
         let vq = VirtQueue::new(GuestAddress(0), m, 16);
 
         let mut q = vq.create_queue();

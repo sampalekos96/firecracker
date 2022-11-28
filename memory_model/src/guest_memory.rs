@@ -119,9 +119,10 @@ impl GuestMemory {
                 }
             }
 
-            println!("To guest base{:?}", range.0);
+            println!("To guest base {:?}", range.0);
 
             let mapping = MemoryMapping::new(range.1).map_err(Error::MemoryMappingFailed)?;
+            println!("To mapping {:?}", mapping);
             regions.push(MemoryRegion {
                 mapping,
                 guest_base: range.0,
@@ -146,11 +147,16 @@ impl GuestMemory {
             // the x86 carved out is at 4GiB, so for VM up to 3GiB
             // the check should never be reached as there is only one mapping
             while i < dirty_regions.len() && (dirty_regions[i].0 < guest_base.offset() + size) {
-                //println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+                println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                 let guest_addr = dirty_regions[i].0 * PAGE_SIZE;
                 let region_len = dirty_regions[i].1 * PAGE_SIZE;
 
-                let addr = ptr + (guest_addr - guest_base.offset());
+                // println!("Prin to add toy addr");
+                // println!("to ptr: {:?}", ptr);
+                // println!("to guest_addr: {:?}", guest_addr);
+                // println!("to guest_base.offset: {:?}", guest_base.offset());
+                let addr = ptr + guest_addr;
+                // let addr = ptr + (guest_addr - guest_base.offset());
                 let buf = unsafe { std::slice::from_raw_parts_mut(addr as *mut u8, region_len) };
                 bufs.push(std::io::IoSliceMut::new(buf));
                 i += 1;
@@ -189,7 +195,7 @@ impl GuestMemory {
             if !load_ws && (i == 1 && diff.copy) || (i == 0 && load_dir.len() == 1 && base.copy) {
                 // eagerly only applicable when diff with no WS or only base with no WS
                 // WS dealt at the end
-                //println!("VMM: eagerly restoring layer {} in {:?}...", i, dir);
+                println!("VMM: eagerly restoring layer {} in {:?}...", i, dir);
                 dir.push("memory_dump");
                 let mut memory_dump = OpenOptions::new()
                     .read(true)
@@ -282,10 +288,11 @@ impl GuestMemory {
     /// # }
     /// ```
     pub fn end_addr(&self) -> GuestAddress {
+        // let mut base = 2147483648usize;
         self.regions
             .iter()
             .max_by_key(|region| region.guest_base)
-            .map_or(GuestAddress(2147483648), |region| region_end(region))
+            .map_or(GuestAddress(0), |region| region_end(region))
     }
 
     /// Returns true if the given address is within the memory range available to the guest.
@@ -333,6 +340,7 @@ impl GuestMemory {
         let mut mapping = BTreeMap::new();
         let mut dirty_list = Vec::new();
         let mut page_i_base = 0usize;
+        // let mut page_i_base = 2147483648usize;
         for region in self.regions.iter() {
             println!("to page_i_base: {}", page_i_base);
             let (mut partial_mapping, mut partial_dirty_list) =
@@ -362,8 +370,11 @@ impl GuestMemory {
 
     fn generate_memory_dump(&self, gfns_dirty_vec: &Vec<usize>, memory_dump: &mut File) -> Result<()> {
         let mut test = 1usize;
-        // let mut start = 0usize;
-        let mut start = 2147483648usize;
+        let mut start = 0usize;
+        let mut base = 2147483648usize;
+
+        println!("To gfns_dirty_vec len {:?}", gfns_dirty_vec.len());
+
         while start < gfns_dirty_vec.len() {
             // find the end of current dirty region
             while test < gfns_dirty_vec.len() && gfns_dirty_vec[test] - gfns_dirty_vec[test-1] == 1 {
@@ -371,11 +382,12 @@ impl GuestMemory {
             }
             let guest_frame_number = gfns_dirty_vec[start];
             let num_guest_frames = test - start; // test - 1 - start + 1
-            //println!("VMM: dump region {}:{}", guest_frame_number, num_guest_frames);
+            // println!("VMM: dump region {}:{}", guest_frame_number, num_guest_frames);
             self.write_from_memory(
-                GuestAddress(guest_frame_number as usize * PAGE_SIZE),
+                GuestAddress(base + guest_frame_number as usize * PAGE_SIZE),
                 memory_dump,
                 num_guest_frames * PAGE_SIZE,
+                false
             )?;
             start = test;
             test = start + 1;
@@ -463,12 +475,16 @@ impl GuestMemory {
 
         println!("PERASA GENERATE_MEMORY_DUMP");
 
+        let mut base = 2147483648usize;
+        let mut temp = 134217728usize;
         // write memory_dump_sparse
         self.write_from_memory(
-            GuestAddress(2147483648),
+            GuestAddress(base),
             &mut memory_dump_sparse,
-            self.end_addr().offset())?;
-        //println!("punching holes...");
+            temp,
+            // self.end_addr().offset(),
+            true)?;
+        println!("punching holes...");
         // a hole at the beginning
         if gfns_dirty_vec[0] > 0 {
             let offset = 0;
@@ -763,7 +779,7 @@ impl GuestMemory {
             mapping
                 .read_obj(offset)
                 .map_err(|e| Error::MemoryAccess(guest_addr, e))
-        })
+        }, false)
     }
 
     /// Writes an object to the memory region at the specified guest address.
@@ -789,7 +805,7 @@ impl GuestMemory {
             mapping
                 .write_obj(val, offset)
                 .map_err(|e| Error::MemoryAccess(guest_addr, e))
-        })
+        }, false)
     }
 
     /// Reads data from a readable object like a File and writes it to guest memory.
@@ -831,7 +847,7 @@ impl GuestMemory {
             mapping
                 .read_to_memory(offset, src, count)
                 .map_err(|e| Error::MemoryAccess(guest_addr, e))
-        })
+        }, false)
     }
 
     /// Writes data from memory to a writable object.
@@ -863,6 +879,7 @@ impl GuestMemory {
         guest_addr: GuestAddress,
         dst: &mut F,
         count: usize,
+        flag: bool,
     ) -> Result<()>
     where
         F: Write,
@@ -876,9 +893,9 @@ impl GuestMemory {
 
         self.do_in_region(guest_addr, count, move |mapping, offset| {
             mapping
-                .write_from_memory(offset, dst, count)
+                .write_from_memory(offset, dst, count, flag)
                 .map_err(|e| Error::MemoryAccess(guest_addr, e))
-        })
+        }, true)
     }
 
     ///// Converts a GuestAddress into a pointer in the address space of this
@@ -906,7 +923,7 @@ impl GuestMemory {
            // This is safe; `do_in_region` already checks that offset is in
            // bounds.
            Ok(unsafe { mapping.as_ptr().add(offset) } as *const u8)
-       })
+       }, false)
     }
 
     /// Only used by vhost-vsock snapshotting
@@ -967,18 +984,34 @@ impl GuestMemory {
     }
 
     /// Read the whole object from a single MemoryRegion
-    pub fn do_in_region<F, T>(&self, guest_addr: GuestAddress, size: usize, cb: F) -> Result<T>
+    pub fn do_in_region<F, T>(&self, guest_addr: GuestAddress, size: usize, cb: F, flag: bool) -> Result<T>
     where
         F: FnOnce(&MemoryMapping, usize) -> Result<T>,
     {
+        let mut base = 2147483648usize;
         for region in self.regions.iter() {
+            // if flag {
+                // println!("BIKA DO_IN_REGION");
+                // println!("me guest_addr {:?}", guest_addr);
+                // println!("me base {:?}", region.guest_base);
+                // println!("me end {:?}", region_end(region));
+            // }
             if guest_addr >= region.guest_base && guest_addr < region_end(region) {
-                // println!("BIKA 1h IF");
+                // if flag {
+                    // println!("BIKA 1h IF");
+                // }
                 let offset = guest_addr.offset_from(region.guest_base);
-                // println!("TO REGION.MAPPING.SIZE(): {:?}", region.mapping.size());
-                // println!("TO OFFSET: {:?}", offset);
-                if size <= region.mapping.size() - offset {
-                    // println!("BIKA 2h IF");
+                // let offset = base + temp;
+                // if flag {
+                    // println!("TO PROVIDED SIZE: {:?}", size);
+                    // println!("TO REGION.MAPPING.SIZE(): {:?}", region.mapping.size());   
+                    // println!("TO OFFSET: {:?}", offset);
+                // }
+                if size <= (region.mapping.size() - offset) {
+                    // if flag {
+                        // println!("BIKA 2h IF");
+                        // println!("me region.mapping {:?}", region.mapping);
+                    // }
                     return cb(&region.mapping, offset);
                 }
                 break;
@@ -1145,7 +1178,7 @@ mod tests {
 
     // Get the base address of the mapping for a GuestAddress.
     fn get_mapping(mem: &GuestMemory, addr: GuestAddress) -> Result<*const u8> {
-        mem.do_in_region(addr, 1, |mapping, _| Ok(mapping.as_ptr() as *const u8))
+        mem.do_in_region(addr, 1, |mapping, _| Ok(mapping.as_ptr() as *const u8), false)
     }
 
     #[test]

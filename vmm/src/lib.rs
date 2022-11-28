@@ -612,7 +612,9 @@ impl EpollContext {
             )));
         }
 
+        println!("Paw na pusharw device_handler");
         self.device_handlers.push(MaybeHandler::new(receiver));
+        println!("Pushara sto device_handlers");
 
         (dispatch_base, sender)
     }
@@ -686,7 +688,7 @@ impl EpollContext {
         )
     }
 
-    #[cfg(feature = "vsock")]
+    // #[cfg(feature = "vsock")]
     fn allocate_virtio_vsock_tokens(&mut self) -> virtio::vsock::EpollConfig {
         let (dispatch_base, sender) =
             self.allocate_tokens(virtio::vsock::VSOCK_EVENTS_COUNT);
@@ -959,53 +961,61 @@ impl Vmm {
 
     // Attaches all block devices from the BlockDevicesConfig.
 
-    // fn attach_block_devices_snapshot(
-    //     &mut self,
-    //     device_manager: &mut MMIODeviceManager,
-    // ) -> std::result::Result<(), StartMicrovmError> {
-    //     let epoll_context = &mut self.epoll_context;
-    //     for drive_config in self.block_device_configs.config_list.iter_mut() {
-    //         // Add the block device from file.
-    //         let block_file = OpenOptions::new()
-    //             .read(true)
-    //             .write(!drive_config.is_read_only)
-    //             .custom_flags(if drive_config.odirect { libc::O_DIRECT } else { 0 })
-    //             .open(&drive_config.path_on_host)
-    //             .map_err(StartMicrovmError::OpenBlockDevice)?;
+    fn attach_block_devices_snapshot(
+        &mut self,
+    ) -> std::result::Result<(), StartMicrovmError> {
+        let epoll_context = &mut self.epoll_context;
 
-    //         let epoll_config = epoll_context.allocate_virtio_block_tokens();
-    //         self.drive_handler_id_map
-    //             .insert(drive_config.drive_id.clone(), handler_idx);
-    //         let rate_limiter = match drive_config.rate_limiter {
-    //             Some(rlim_cfg) => Some(
-    //                 rlim_cfg
-    //                     .into_rate_limiter()
-    //                     .map_err(StartMicrovmError::CreateRateLimiter)?,
-    //             ),
-    //             None => None,
-    //         };
+        let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
-    //         let block_box = Box::new(
-    //             devices::virtio::Block::new(
-    //                 block_file,
-    //                 drive_config.is_read_only,
-    //                 epoll_config,
-    //                 rate_limiter,
-    //             )
-    //             .map_err(StartMicrovmError::CreateBlockDevice)?,
-    //         );
-    //         device_manager
-    //             .register_virtio_device(
-    //                 self.vm.get_fd(),
-    //                 block_box,
-    //                 None,
-    //                 Some(drive_config.drive_id.clone()),
-    //             )
-    //             .map_err(StartMicrovmError::RegisterBlockDevice)?;
-    //     }
+        for drive_config in self.block_device_configs.config_list.iter_mut() {
 
-    //     Ok(())
-    // }
+            println!("drive config: {:?}", drive_config);
+
+            // Add the block device from file.
+            let block_file = OpenOptions::new()
+                .read(true)
+                .write(!drive_config.is_read_only)
+                // .custom_flags(if drive_config.odirect { libc::O_DIRECT } else { 0 })
+                .open(&drive_config.path_on_host)
+                .map_err(StartMicrovmError::OpenBlockDevice)?;
+
+            // let epoll_config = epoll_context.allocate_virtio_block_tokens();
+            let (epoll_config, handler_idx) = epoll_context.allocate_virtio_block_tokens();
+            self.drive_handler_id_map
+                .insert(drive_config.drive_id.clone(), handler_idx);
+
+            let rate_limiter = match drive_config.rate_limiter {
+                Some(rlim_cfg) => Some(
+                    rlim_cfg
+                        .into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            let block_box = Box::new(
+                devices::virtio::Block::new(
+                    block_file,
+                    drive_config.is_read_only,
+                    epoll_config,
+                    rate_limiter,
+                )
+                .map_err(StartMicrovmError::CreateBlockDevice)?,
+            );
+            device_manager
+                .register_virtio_device(
+                    self.vm.get_fd(),
+                    block_box,
+                    None,
+                    TYPE_BLOCK,
+                    &drive_config.drive_id,
+                )
+                .map_err(StartMicrovmError::RegisterBlockDevice)?;
+        }
+
+        Ok(())
+    }
 
     // Attaches all block devices from the BlockDevicesConfig.
     fn attach_block_devices(&mut self) -> std::result::Result<(), StartMicrovmError> {
@@ -1074,13 +1084,6 @@ impl Vmm {
 
             let (epoll_config, handler_idx) = epoll_context.allocate_virtio_block_tokens();
 
-            // let epoll_config = epoll_context.allocate_tokens_for_virtio_device(
-            //     TYPE_BLOCK,
-            //     &drive_config.drive_id,
-            //     BLOCK_EVENTS_COUNT,
-            // );
-
-
             self.drive_handler_id_map
                 .insert(drive_config.drive_id.clone(), handler_idx);
             let rate_limiter = match drive_config.rate_limiter {
@@ -1091,12 +1094,6 @@ impl Vmm {
                 ),
                 None => None,
             };
-
-            let rate_limiter = drive_config
-                .rate_limiter
-                .map(vmm_config::RateLimiterConfig::into_rate_limiter)
-                .transpose()
-                .map_err(StartMicrovmError::CreateRateLimiter)?;
 
             let block_box = Box::new(
                 devices::virtio::Block::new(
@@ -1111,7 +1108,7 @@ impl Vmm {
                 .register_virtio_device(
                     self.vm.get_fd(),
                     block_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     TYPE_BLOCK,
                     &drive_config.drive_id,
                 )
@@ -1121,53 +1118,71 @@ impl Vmm {
         Ok(())
     }
 
-    // fn attach_net_devices_snapshot(
-    //     &mut self,
-    //     device_manager: &mut MMIODeviceManager,
-    // ) -> std::result::Result<(), StartMicrovmError> {
-    //     for cfg in self.network_interface_configs.iter_mut() {
-    //         let (epoll_config, handler_idx) = self.epoll_context.allocate_virtio_net_tokens();
-    //         self.net_handler_id_map
-    //             .insert(cfg.iface_id.clone(), handler_idx);
+    fn attach_net_devices_snapshot(
+        &mut self,
+    ) -> std::result::Result<(), StartMicrovmError> {
 
-    //         let allow_mmds_requests = cfg.allow_mmds_requests();
-    //         let rx_rate_limiter = match cfg.rx_rate_limiter {
-    //             Some(rlim) => Some(
-    //                 rlim.into_rate_limiter()
-    //                     .map_err(StartMicrovmError::CreateRateLimiter)?,
-    //             ),
-    //             None => None,
-    //         };
-    //         let tx_rate_limiter = match cfg.tx_rate_limiter {
-    //             Some(rlim) => Some(
-    //                 rlim.into_rate_limiter()
-    //                     .map_err(StartMicrovmError::CreateRateLimiter)?,
-    //             ),
-    //             None => None,
-    //         };
+        let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
-    //         if let Some(tap) = cfg.take_tap() {
-    //             let net_box = Box::new(
-    //                 devices::virtio::Net::new_with_tap(
-    //                     tap,
-    //                     cfg.guest_mac(),
-    //                     epoll_config,
-    //                     rx_rate_limiter,
-    //                     tx_rate_limiter,
-    //                     allow_mmds_requests,
-    //                 )
-    //                 .map_err(StartMicrovmError::CreateNetDevice)?,
-    //             );
+        for cfg in self.network_interface_configs.iter_mut() {
 
-    //             // device_manager
-    //                 // .register_virtio_device(self.vm.get_fd(), net_box, None, None)
-    //                 // .map_err(StartMicrovmError::RegisterNetDevice)?;
-    //         } else {
-    //             return Err(StartMicrovmError::NetDeviceNotConfigured)?;
-    //         }
-    //     }
-    //     Ok(())
-    // }
+            // let kernel_config = self
+            //     .kernel_config
+            //     .as_mut()
+            //     .ok_or(StartMicrovmError::MissingKernelConfig)?;
+
+            let (epoll_config, handler_idx) = self.epoll_context.allocate_virtio_net_tokens();
+            self.net_handler_id_map
+                .insert(cfg.iface_id.clone(), handler_idx);
+
+            let allow_mmds_requests = cfg.allow_mmds_requests();
+            let rx_rate_limiter = match cfg.rx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+            let tx_rate_limiter = match cfg.tx_rate_limiter {
+                Some(rlim) => Some(
+                    rlim.into_rate_limiter()
+                        .map_err(StartMicrovmError::CreateRateLimiter)?,
+                ),
+                None => None,
+            };
+
+            if let Some(tap) = cfg.take_tap() {
+                let net_box = Box::new(
+                    devices::virtio::Net::new_with_tap(
+                        tap,
+                        cfg.guest_mac(),
+                        epoll_config,
+                        rx_rate_limiter,
+                        tx_rate_limiter,
+                        allow_mmds_requests,
+                    )
+                    .map_err(StartMicrovmError::CreateNetDevice)?,
+                );
+
+                device_manager
+                    .register_virtio_device(
+                        self.vm.get_fd(),
+                        net_box,
+                        None,
+                        TYPE_NET,
+                        &cfg.iface_id,
+                    )
+                    .map_err(StartMicrovmError::RegisterNetDevice)?;
+
+                // device_manager
+                    // .register_virtio_device(self.vm.get_fd(), net_box, None, None)
+                    // .map_err(StartMicrovmError::RegisterNetDevice)?;
+            } else {
+                return Err(StartMicrovmError::NetDeviceNotConfigured)?;
+            }
+        }
+        Ok(())
+    }
 
     fn attach_net_devices(&mut self) -> std::result::Result<(), StartMicrovmError> {
         // We rely on check_health function for making sure kernel_config is not None.
@@ -1234,7 +1249,7 @@ impl Vmm {
                     .register_virtio_device(
                         self.vm.get_fd(),
                         net_box,
-                        &mut kernel_config.cmdline,
+                        Some(&mut kernel_config.cmdline),
                         TYPE_NET,
                         &cfg.iface_id,
                     )
@@ -1247,36 +1262,46 @@ impl Vmm {
     }
 
     // #[cfg(feature = "vsock")]
-    // fn attach_vsock_devices_snapshot(
-    //     &mut self,
-    //     device_manager: &mut MMIODeviceManager,
-    // ) -> std::result::Result<(), StartMicrovmError> {
-    //     for cfg in self.vsock_device_configs.iter() {
-    //         let backend = devices::virtio::vsock::VsockUnixBackend::new(
-    //             u64::from(cfg.guest_cid),
-    //             cfg.uds_path.clone(),
-    //         )
-    //         .map_err(StartMicrovmError::CreateVsockBackend)?;
+    fn attach_vsock_devices_snapshot(
+        &mut self,
+    ) -> std::result::Result<(), StartMicrovmError> {
 
-    //         let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+        let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
-    //         let vsock_box = Box::new(
-    //             devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
-    //                 .map_err(StartMicrovmError::CreateVsockDevice)?,
-    //         );
-    //         // device_manager
-    //             // .register_virtio_device(
-    //                 // self.vm.get_fd(),
-    //                 // vsock_box,
-    //                 // None,
-    //                 // Some(cfg.vsock_id.clone()),
-    //             // )
-    //             // .map_err(StartMicrovmError::RegisterVsockDevice)?;
-    //     }
-    //     Ok(())
-    // }
+        for cfg in self.vsock_device_configs.iter() {
 
-    #[cfg(feature = "vsock")]
+            // let kernel_config = self
+            //     .kernel_config
+            //     .as_mut()
+            //     .ok_or(StartMicrovmError::MissingKernelConfig)?;
+
+            let backend = devices::virtio::vsock::VsockUnixBackend::new(
+                u64::from(cfg.guest_cid),
+                cfg.uds_path.clone(),
+            )
+            .map_err(StartMicrovmError::CreateVsockBackend)?;
+
+            let epoll_config = self.epoll_context.allocate_virtio_vsock_tokens();
+
+            let vsock_box = Box::new(
+                devices::virtio::vsock::Vsock::new(u64::from(cfg.guest_cid), epoll_config, backend)
+                    .map_err(StartMicrovmError::CreateVsockDevice)?,
+            );
+
+            device_manager
+                .register_virtio_device(
+                    self.vm.get_fd(),
+                    vsock_box,
+                    None,
+                    virtio::TYPE_VSOCK,
+                    &cfg.vsock_id,
+                )
+                .map_err(StartMicrovmError::RegisterVsockDevice)?;
+        }
+        Ok(())
+    }
+
+    // #[cfg(feature = "vsock")]
     fn attach_vsock_devices(
         &mut self,
         // device_manager: &mut MMIODeviceManager,
@@ -1318,7 +1343,7 @@ impl Vmm {
                 .register_virtio_device(
                     self.vm.get_fd(),
                     vsock_box,
-                    &mut kernel_config.cmdline,
+                    Some(&mut kernel_config.cmdline),
                     virtio::TYPE_VSOCK,
                     &cfg.vsock_id,
                 )
@@ -1445,49 +1470,36 @@ impl Vmm {
 
         self.init_mmio_device_manager()?;
 
-        // println!("Perasame init_mmio_device_manager");
-
-        // let guest_mem = self
-        //     .guest_memory
-        //     .clone()
-        //     .ok_or(StartMicrovmError::GuestMemory(
-        //         memory_model::GuestMemoryError::MemoryNotInitialized,
-        //     ))?;
-
-        // Instantiate the MMIO device manager.
-        // 'mmio_base' address has to be an address which is protected by the kernel.
-
-        // We have already initialized this
-
-        // let mut device_manager = MMIODeviceManager::new(
-            // guest_mem.clone(),
-            // arch::get_reserved_mem_addr() as u64,
-            // (arch::IRQ_BASE, arch::IRQ_MAX),
-        // );
-
         // let mut device_manager = self.mmio_device_manager.clone().unwrap();
 
         if !self.load_dir.is_empty() {
-            // self.attach_block_devices_snapshot(&mut device_manager)?;
-            // self.attach_net_devices_snapshot(&mut device_manager)?;
+            // let mut device_manager = self.mmio_device_manager.as_mut().unwrap();
+            println!("Prin tin attach_block_devices_snapshot");
+            self.attach_block_devices_snapshot()?;
+            println!("Perasa attach_block_devices_snapshot");
+            self.attach_net_devices_snapshot()?;
+            println!("Perasa attach_net_devices_snapshot");
             // #[cfg(feature = "vsock")]
-            // self.attach_vsock_devices_snapshot(&mut device_manager)?;
+            self.attach_vsock_devices_snapshot()?;
+            println!("Perasa attach_vsock_devices_snapshot");
         } else {
             self.attach_block_devices()?;
             // println!("Perasame attach_block_devices");
             self.attach_net_devices()?;
             // println!("Perasame attach_net_devices");
-            #[cfg(feature = "vsock")]
-            {
+            self.attach_vsock_devices()?;
+            // println!("Perasame attach_vsock_devices");
+            // #[cfg(feature = "vsock")]
+            // {
                 // let guest_mem = self
                     // .guest_memory
                     // .clone()
                     // .ok_or(StartMicrovmError::GuestMemory(
                         // memory_model::GuestMemoryError::MemoryNotInitialized,
                     // ))?;
-                self.attach_vsock_devices()?;
-                println!("Perasame attach_vsock_devices");
-            }
+                // self.attach_vsock_devices()?;
+                // println!("Perasame attach_vsock_devices");
+            // }
         }
 
         // self.mmio_device_manager = Some(device_manager);
@@ -1528,15 +1540,17 @@ impl Vmm {
 
         let device_manager = self.mmio_device_manager.as_mut().unwrap();
 
-        let kernel_config = self
-            .kernel_config
-            .as_mut()
-            .ok_or(StartMicrovmError::MissingKernelConfig)?;
+        if self.load_dir.is_empty() {
+            let kernel_config = self
+                .kernel_config
+                .as_mut()
+                .ok_or(StartMicrovmError::MissingKernelConfig)?;
 
-        if kernel_config.cmdline.as_str().contains("console=") {
-            device_manager
-                .register_mmio_serial(self.vm.get_fd(), &mut kernel_config.cmdline)
-                .map_err(StartMicrovmError::RegisterMMIODevice)?;
+            if kernel_config.cmdline.as_str().contains("console=") {
+                device_manager
+                    .register_mmio_serial(self.vm.get_fd(), &mut kernel_config.cmdline)
+                    .map_err(StartMicrovmError::RegisterMMIODevice)?;
+            }
         }
 
         device_manager
@@ -1575,35 +1589,18 @@ impl Vmm {
         
         let mut vcpus = Vec::with_capacity(vcpu_count as usize);
 
-        // println!("Prin tin get device_manager");
-
-        // `mmio_device_manager` is instantiated in `init_devices()`, which is called before
-        // `start_vcpus()`.
-
-        // let device_manager = self
-            // .mmio_device_manager
-            // .as_ref()
-            // .ok_or(StartMicrovmError::DeviceManager)?;
-
-        // let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK)
-        //     .map_err(Error::EventFd)
-        //     .map_err(Internal)?;
-
         let vm_memory = self
             .vm
             .get_memory()
             .expect("Cannot create vCPUs before guest memory initialization!");
 
         for cpu_id in 0..vcpu_count {
-            // println!("Prin tin io_bus");
-
-            // let io_bus = self.legacy_device_manager.io_bus.clone();
-
-            // let mmio_bus = device_manager.bus.clone();
-
+            
             let mut vcpu = Vcpu::new(cpu_id, &self.vm, request_ts.clone())
                 .map_err(StartMicrovmError::Vcpu)?;
 
+            // WE NEED TO ADD VCPU LOAD STATE FUNCTIONALITY
+            
             // let maybe_vcpu_state = match self.snap_to_load.as_ref() {
                 // Some(snap) => Some(&snap.vcpu_states[cpu_id as usize]),
                 // None => None,
@@ -1828,16 +1825,31 @@ impl Vmm {
 
     fn restore_block_device(&mut self, index: u64) {
         //manually replay writes to mmio device
-        let base = 0xd000_0000u64 + index*4096; // index: rootfs=0, appfs=1
+        // let device_manager = self.mmio_device_manager.as_mut().unwrap();
+        // let temp = device_manager.get_device_base();
+        // let base = temp + index*4096; // index: rootfs=0, appfs=1
+        // the addr of the first of the block devs (base)
+        let base = 1073745920 + index*4096; // index: rootfs=0, appfs=1
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
         let mut data = [0u8; 4];
         let zero = [0u8; 4];
 
         // 0x70: update_driver_status
+        // Reading from this register returns the current device status flags. 
+        // Writing non-zero values to this register sets the status flags, indicating the driver progress. 
+        // Writing zero (0x0) to this register triggers a device reset
         // 0x14: features_select
+        // Writing to this register selects a set of 32 device feature bits accessible by reading from DeviceFeatures
         // 0x20: ack_features
+        // Writing to this register sets 32 consecutive flag bits, 
+        // the least significant bit depending on the last value written to DriverFeaturesSel.
         // 0x24: acked_features_select
+        // Writing to this register selects a set of 32 activated feature bits accessible by writing to DriverFeatures
         // 0x30: queue_select
+        // Writing to this register selects the virtual queue that the following operations on QueueNumMax, QueueNum, 
+        // QueueReady, QueueDescLow, QueueDescHigh, QueueAvailLow, QueueAvailHigh, QueueUsedLow and QueueUsedHigh apply to. 
+        // The index number of the first queue is zero (0x0)
+
         bus.write(base+0x70, &zero);
         LittleEndian::write_u32(data.as_mut(), 1);
         bus.write(base+0x70, &data);
@@ -1878,13 +1890,23 @@ impl Vmm {
 
         let queues =
             &self.snap_to_load.as_ref().unwrap().block_states[index as usize].queues;
+        println!("TA BLOCK QUEUES: {:?}", queues);
+
+        // Sleep so we can attach strace
+        // println!("TO PID: {:?}", std::process::id());
+        // thread::sleep_ms(20000);
+
         self.epoll_context.get_device_handler(index as usize).unwrap().set_queues(&queues);
+        println!("Perasa restore_block_device");
+        // ERROR --> called `Result::unwrap()` on an `Err` value: Device event handler not found. This might point to a guest device driver issue.
+        // caused when calling get_device_handler(). The 'device_handlers' field is not initialized properly(?). 
+        // device_handlers --> Vec::with_capacity(6)
     }
 
     fn restore_net_device(&mut self, index: u64) {
         //manually replay writes to mmio device
         // index: network devices come after block devices
-        let base = 0xd000_0000u64 + (index + self.drive_handler_id_map.len() as u64)*4096;
+        let base = 1073745920 + (index + self.drive_handler_id_map.len() as u64)*4096;
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
         let mut data = [0u8; 4];
         let zero = [0u8; 4];
@@ -1949,7 +1971,7 @@ impl Vmm {
 
     fn restore_vsock(&mut self) {
         let mmio_offset = self.drive_handler_id_map.len() + self.net_handler_id_map.len();
-        let base = 0xd000_0000u64 + 4096 * mmio_offset as u64;
+        let base = 1073745920 + 4096 * mmio_offset as u64;
         let bus = self.mmio_device_manager.as_ref().unwrap().bus.clone();
         let mut data = [0u8; 4];
         let zero = [0u8; 4];
@@ -2019,91 +2041,81 @@ impl Vmm {
         self.init_guest_memory()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        // println!("Perasa init_guest_memory");
+        
 
+        println!("Perasa init_guest_memory");
+
+        // let entry_addr = self
+            // .load_kernel()
+            // .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+
+        // We need to check if this is the right addr in the aarch64 case
         // let mut entry_addr = GuestAddress(0);
+        let mut entry_addr = GuestAddress(2148007936);
+        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        if self.load_dir.is_empty() {
+            entry_addr = self
+                .load_kernel()
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+            println!("To entry_addr: {:?}", entry_addr);
+        }
 
-
-        // if !self.load_dir.is_empty() {
-            // for i in 0..self.drive_handler_id_map.len() {
-                // self.restore_block_device(i as u64);
-            // }
-            // for i in 0..self.net_handler_id_map.len() {
-                // self.restore_net_device(i as u64);
-            // }
-            // self.restore_vsock();
-        // } else {
-
-        // println!("Prin tin load_kernel");
-
-        let entry_addr = self
-            .load_kernel()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-            
-        // println!("Perasa tin load kernel");
-
-            // initrd = load_initrd_from_config(boot_config, self.guest_memory.clone().unwrap());
-
-            // println!("Prin tin configure system");
-
-            // self.configure_system()
-            //     .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-            
-            // println!("Meta tin configure system");
-        // }
-
-
-        // Ftiaxnoume asygxrona to MMIODeviceManager giati to xreiazetai i create_vcpu
-
-        // let mut device_manager = MMIODeviceManager::new(
-            // self.guest_memory.clone().unwrap(),
-            // MMIO_MEM_SIZE,
-            // (arch::aarch64::layout::IRQ_BASE, arch::aarch64::layout::IRQ_MAX),
-        // );
-
-        // self.mmio_device_manager = Some(device_manager);
-
-        // Till here
-
+        println!("Meta tin load_kernel");        
 
         let mut vcpus = self
             .create_vcpus(entry_addr, request_ts)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
         ts_vec.push(Instant::now());
-        //let t2 = now_monotime_us();
+        let t2 = now_monotime_us();
 
-        // println!("Perasa tin create_vcpu");
+        println!("Perasa tin create_vcpu");
 
-        //let t0 = now_monotime_us();
+        let t0 = now_monotime_us();
         ts_vec.push(Instant::now());
         self.setup_interrupt_controller()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        // println!("Perasa setup_interrupt_controller");
+        println!("Perasa setup_interrupt_controller");
 
         self.attach_virtio_devices()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
-        // println!("Perasa attach_virtio");
+        println!("Perasa attach_virtio");
 
         self.attach_legacy_devices_aarch64()
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
 
-        // We need to check the addr of the attached devices
-
         println!("Ta addresses twn mmio devices");
-
         let mut mmio_devs = self.get_mmio_device_info();
-        // for (key,value) in &mmio_devs {
-            // println!("{} / {}", key, value);
-        // }
         println!("{:?}", mmio_devs);
-
         println!("Till here");
-        
 
-        // println!("Perasa attach_legacy_devices_aarch64");
+        // let temp;
+        // temp = self.epoll_context.get_device_handler(0 as usize).unwrap();
+        // println!("To device handler toy rootfs: {:?}", temp);
+    
+        println!("Perasa attach_legacy_devices_aarch64");
+
+        if self.load_dir.is_empty(){
+            self.configure_system(vcpus.as_mut(), entry_addr)
+                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+        } else {
+            println!("Prin tin restore_block_device");
+            for i in 0..self.drive_handler_id_map.len() {
+                self.restore_block_device(i as u64);
+            }
+            println!("Prin tin restore_net_device");
+            for i in 0..self.net_handler_id_map.len() {
+                self.restore_net_device(i as u64);
+            }
+            self.restore_vsock();
+        }
+            
+        // println!("Meta tin configure system");
+        
+        self.register_events()
+            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
 
         if self.dump_dir.is_some() {
             self.snap_to_dump = Some(Snapshot {
@@ -2115,16 +2127,6 @@ impl Vmm {
             });
         }
 
-        // println!("Prin tin configure system");
-
-        self.configure_system(vcpus.as_mut(), entry_addr)
-                .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-            
-        // println!("Meta tin configure system");
-        
-        self.register_events()
-            .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
-
         ts_vec.push(Instant::now());
         let t1 = now_monotime_us();
 
@@ -2132,6 +2134,7 @@ impl Vmm {
 
         self.start_vcpus(vcpus)
             .map_err(|e| VmmActionError::StartMicrovm(ErrorKind::Internal, e))?;
+
         ts_vec.push(Instant::now());
         //let t3 = now_monotime_us();
         // fast (28us) and does not affect total boot latency measurement

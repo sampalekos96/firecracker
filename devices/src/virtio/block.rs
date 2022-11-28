@@ -252,7 +252,7 @@ impl Request {
             }
             RequestType::Out => {
                 // println!("PAW NA BW WRITE_FROM_MEMORY APO VIRTIO BLOCK.RS");
-                mem.write_from_memory(self.data_addr, disk, self.data_len as usize)
+                mem.write_from_memory(self.data_addr, disk, self.data_len as usize, false)
                     .map_err(ExecuteError::Write)?;
                 METRICS.block.write_count.add(self.data_len as usize);
             }
@@ -389,6 +389,7 @@ impl BlockEpollHandler {
         Ok(())
     }
 }
+
 
 impl EpollHandler for BlockEpollHandler {
     fn set_queues(&mut self, other: &Vec<Queue>) {
