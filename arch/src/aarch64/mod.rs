@@ -9,8 +9,6 @@ pub mod fdt;
 pub mod layout;
 
 pub mod gic;
-mod gicv2;
-mod gicv3;
 
 use aarch64::gic::GICDevice;
 

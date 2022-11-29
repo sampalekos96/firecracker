@@ -7,7 +7,7 @@ use std::{boxed::Box, result};
 use aarch64::DeviceFd;
 use aarch64::VmFd;
 
-use super::gic::{Error, GICDevice};
+use super::{Error, GICDevice};
 
 type Result<T> = result::Result<T, Error>;
 
