@@ -4,6 +4,7 @@
 mod dist_regs;
 mod gicv2;
 mod gicv3;
+mod redist_regs;
 
 use std::{boxed::Box, io, result};
 
@@ -14,6 +15,7 @@ use aarch64::VmFd;
 // use super::gicv2::GICv2;
 // use super::gicv3::GICv3;
 pub use self::dist_regs::{get_dist_regs, set_dist_regs};
+pub use self::redist_regs::{get_redist_regs, set_redist_regs};
 use {super::layout, self::gicv2::GICv2, self::gicv3::GICv3};
 
 /// Errors thrown while setting up the GIC.
