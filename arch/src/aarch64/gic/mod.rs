@@ -5,6 +5,7 @@ mod dist_regs;
 mod gicv2;
 mod gicv3;
 mod redist_regs;
+mod icc_regs;
 
 use std::{boxed::Box, io, result};
 
@@ -16,6 +17,7 @@ use aarch64::VmFd;
 // use super::gicv3::GICv3;
 pub use self::dist_regs::{get_dist_regs, set_dist_regs};
 pub use self::redist_regs::{get_redist_regs, set_redist_regs};
+pub use self::icc_regs::{get_icc_regs, set_icc_regs};
 use {super::layout, self::gicv2::GICv2, self::gicv3::GICv3};
 
 /// Errors thrown while setting up the GIC.
@@ -152,4 +154,19 @@ pub trait GICDevice {
 /// to fall-back to a GICv2 device.
 pub fn create_gic(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>> {
     GICv3::new(vm, vcpu_count).or_else(|_| GICv2::new(vm, vcpu_count))
+}
+
+/// Function that flushes
+/// RDIST pending tables into guest RAM.
+///
+/// The tables get flushed to guest RAM whenever the VM gets stopped.
+pub fn save_pending_tables(fd: &DeviceFd) -> Result<()> {
+    let init_gic_attr = kvm_bindings::kvm_device_attr {
+        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL,
+        attr: u64::from(kvm_bindings::KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES),
+        addr: 0,
+        flags: 0,
+    };
+    fd.set_device_attr(&init_gic_attr)
+        .map_err(|e| Error::DeviceAttribute(e))
 }
