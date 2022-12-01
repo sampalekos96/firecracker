@@ -1532,7 +1532,7 @@ impl Vmm {
     //         .map_err(StartMicrovmError::LegacyIOBus)?;
 
     //     Ok(())
-    // }
+    //
 
     fn attach_legacy_devices_aarch64(&mut self) -> std::result::Result<(), StartMicrovmError> {
 
@@ -1612,7 +1612,10 @@ impl Vmm {
             // vcpu.configure(&self.vm_config, entry_addr, &self.vm, maybe_vcpu_state)
                 // .map_err(StartMicrovmError::VcpuConfigure)?;
 
-            vcpu.configure_aarch64(&self.vm.get_fd(), vm_memory, entry_addr)
+            vcpu.fd.init(&self.vm.fd).unwrap();
+
+            // Check that configure_aarch64() is in the right place (propably move it outside create_vcpus()?)
+            vcpu.configure_aarch64(vm_memory, entry_addr)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
 
             // println!("Prin tin push vcpu");
@@ -2169,6 +2172,44 @@ impl Vmm {
         Ok(VmmData::Empty)
     }
 
+    fn construct_gicr_typer(vcpu_state: &vstate::VcpuState) -> Vec<u64> {
+        /* Pre-construct the GICR_TYPER:
+         * For our implementation:
+         *  Top 32 bits are the affinity value of the associated CPU
+         *  CommonLPIAff == 01 (redistributors with same Aff3 share LPI table)
+         *  Processor_Number == CPU index starting from 0
+         *  DPGS == 0 (GICR_CTLR.DPG* not supported)
+         *  Last == 1 if this is the last redistributor in a series of
+         *            contiguous redistributor pages
+         *  DirectLPI == 0 (direct injection of LPIs not supported)
+         *  VLPIS == 0 (virtual LPIs not supported)
+         *  PLPIS == 0 (physical LPIs not supported)
+         */
+        let mut mpidrs: Vec<u64> = Vec::new();
+        // let mut mpidrs: u64;
+        let index = 0;
+        let last = 1;
+        let mut cpu_affid = vcpu_state.mpidr & 1_0952_3343_7695;
+        cpu_affid = ((cpu_affid & 0xFF_0000_0000) >> 8) | (cpu_affid & 0xFF_FFFF);
+        mpidrs.push((cpu_affid << 32) | (1 << 24) | (index as u64) << 8 | (last << 4));
+
+        // for (index, state) in vcpu_states.iter().enumerate() {
+            // let last = {
+                // if index == vcpu_states.len() - 1 {
+                    // 1
+                // } else {
+                    // 0
+                // }
+            // };
+            //calculate affinity
+            // let mut cpu_affid = state.mpidr & 1_0952_3343_7695;
+            // cpu_affid = ((cpu_affid & 0xFF_0000_0000) >> 8) | (cpu_affid & 0xFF_FFFF);
+            // mpidrs.push((cpu_affid << 32) | (1 << 24) | (index as u64) << 8 | (last << 4));
+        // }
+
+        mpidrs
+    }
+
     // fn load_initrd_from_config(
     //     boot_cfg: &BootConfig,
     //     vm_memory: &GuestMemoryMmap,
@@ -2395,9 +2436,9 @@ impl Vmm {
                             println!("Egine trigger to snap event");
                             self.snap_evt.read().map_err(Error::EventFd)?;
                             vcpu_snap_cnt += 1;
-                            // let info = self.snap_receiver.as_ref().unwrap().recv().unwrap();
-                            // self.snap_to_dump.as_mut().unwrap().vcpu_states[info.id as usize]
-                                // = info.state;
+                            let info = self.snap_receiver.as_ref().unwrap().recv().unwrap();
+                            self.snap_to_dump.as_mut().unwrap().vcpu_states[info.id as usize]
+                                = info.state;
                             if vcpu_snap_cnt == self.vcpus_handles.len() {
                                 exit_on_dump = true;
                             }
@@ -2436,7 +2477,17 @@ impl Vmm {
                 println!("Kaname save ta Vsock states");
 
                 // dump irqchip state
-                self.vm.dump_irqchip(snapshot).map_err(|e| Error::SaveSnapshot(e))?;
+                // We need to get access to vcpus and through them to mpidrs
+                // let vcpus = self.vcpus_handles;
+                // let vcpu_mpidrs = vcpus.into_iter().map(|cpu| cpu.get_mpidr()).collect();
+                // self.vm.dump_irqchip(snapshot, vcpu_mpidrs).map_err(|e| Error::SaveSnapshot(e))?;
+
+                let vcpu_state = &snapshot.vcpu_states[0 as usize];
+                let mpidrs = Vmm::construct_gicr_typer(&vcpu_state);
+                println!("Ftiaxame mpidrs");
+                self.vm.dump_irqchip(snapshot, &mpidrs).unwrap();
+                // self.vm.dump_irqchip(snapshot, &mpidrs).map_err(|e| Error::SaveSnapshot(e))?;
+                println!("Dumped the irqchip state");
 
                 println!("snapshotting memory...");
                 if let Some(dirty_pages_set) = self.vm.dump_initialized_memory_to_file(

@@ -133,6 +133,11 @@ impl RTC {
         }
         Ok(())
     }
+
+    pub fn interrupt_evt(&self) -> &EventFd {
+        &self.interrupt_evt
+    }
+
 }
 
 impl BusDevice for RTC {
@@ -198,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_rtc_read_write_and_event() {
-        let mut rtc = RTC::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
+        // let mut rtc = RTC::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
         let mut data = [0; 4];
 
         // Read and write to the MR register.

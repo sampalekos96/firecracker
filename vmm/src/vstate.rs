@@ -109,6 +109,8 @@ pub enum Error {
     SetupGIC(arch::aarch64::gic::Error),
     SaveState(arch::aarch64::regs::Error),
     RestoreState(arch::aarch64::regs::Error),
+    SaveRegisters(arch::aarch64::gic::Error),
+    RestoreRegisters(arch::aarch64::gic::Error),
 }
 pub type Result<T> = result::Result<T, Error>;
 
@@ -136,14 +138,21 @@ pub struct VcpuInfo {
     pub state: VcpuState,
 }
 
+// #[derive(Default, Serialize, Deserialize)]
+// pub struct IoapicState {
+//    pub base_address: u64,
+//    pub ioregsel: u32,
+//    pub id: u32,
+//    pub irr: u32,
+//    pub pad: u32,
+//    pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
+// }
+
 #[derive(Default, Serialize, Deserialize)]
-pub struct IoapicState {
-   pub base_address: u64,
-   pub ioregsel: u32,
-   pub id: u32,
-   pub irr: u32,
-   pub pad: u32,
-   // pub redirtbl: [kvm_ioapic_state__bindgen_ty_1__bindgen_ty_1; 24usize],
+pub struct GicState {
+    dist: Vec<u32>,
+    rdist: Vec<u32>,
+    icc: Vec<u32>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -154,12 +163,8 @@ pub struct VirtioState {
 /// Snapshot
 #[derive(Default, Serialize, Deserialize)]
 pub struct Snapshot {
-    /// IOAPIC
-    // pub ioapic: IoapicState,
-    /// PIC master
-    // pub pic_master: kvm_pic_state,
-    /// PIC slave
-    // pub pic_slave: kvm_pic_state,
+    /// GicState
+    pub gic_state: GicState,
     /// Virtio block device
     pub block_states: Vec<VirtioState>,
     /// Virtio net device
@@ -233,60 +238,6 @@ impl Vm {
     }
 
 
-
-
-
-    /// Stub function that needs to be implemented when aarch64 functionality is added.
-    // pub fn configure_aarch64(
-        // &self,
-        // _guest_mem: &GuestMemory,
-        // _vcpus: &mut [Vcpu],
-        // _entry_addr: GuestAddress,
-        // _mmio_device: &MMIODeviceManager,
-    // ) -> super::Result<()> {
-
-        // for vcpu in _vcpus.iter_mut() {
-            // vcpu.fd
-                // .configure(...)
-
-            // arch::aarch64::regs::setup_boot_regs(
-            //     &vcpu.fd,
-            //     0,
-            //     _entry_addr.offset().try_into().unwrap(),
-            //     _guest_mem,
-            // ).unwrap();
-            // .map_err(Error::ConfigureRegisters)?;
-
-            // vcpu.mpidr =
-                // arch::aarch64::regs::read_mpidr(&vcpu.fd).unwrap();
-                // .map_err(io::Error::last_os_error())?;
-        // }
-
-        // let mut vcpus_mpidr = Vec::new();
-
-        // for vcpu in _vcpus.iter_mut() {
-
-            // let vcpu_mpidr = vcpu.get_mpidr();
-
-            // vcpus_mpidr.push(vcpu_mpidr);
-            
-        // }
-
-        // arch::aarch64::configure_system(
-            // _guest_mem,
-            // vcpus_mpidr,
-            // _mmio_device.get_device_info(),
-            // self.get_irqchip(),
-        // ).unwrap();
-
-        // Ok(())
-    // }
-
-
-
-
-
-
     /// Returns a clone of the supported `CpuId` for this Vm.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn get_supported_cpuid(&self) -> CpuId {
@@ -344,9 +295,25 @@ impl Vm {
         -> std::result::Result<(), GuestMemoryError> {
         self.guest_mem.as_ref().unwrap().dump_working_set(dir, base_layer)
     }
+    
 
-    // fn load_irqchip(&self, snapshot: &Snapshot) -> result::Result<(), io::Error> {
+    fn load_irqchip(&self, snapshot: &Snapshot, mpidrs: &[u64]) -> Result<()> {
         
+        let irqchip_handle = self.get_irqchip().device_fd();
+        let state = &snapshot.gic_state;
+
+        arch::aarch64::gic::set_dist_regs(irqchip_handle, &state.dist)
+            .map_err(Error::RestoreRegisters)?;
+        arch::aarch64::gic::set_redist_regs(irqchip_handle, mpidrs, &state.rdist)
+            .map_err(Error::RestoreRegisters)?;
+        arch::aarch64::gic::set_icc_regs(irqchip_handle, &mpidrs, &state.icc)
+            .map_err(Error::RestoreRegisters)?;
+
+        // WE NEED TO FIX THIS
+        // self.fd.set_irqchip(irqchip_handle);
+
+        Ok(())
+
         // let mut irqchip = kvm_irqchip {
         //     chip_id: KVM_IRQCHIP_IOAPIC,
         //     ..Default::default()
@@ -377,13 +344,40 @@ impl Vm {
         // };
         // irqchip.chip.pic = snapshot.pic_slave;
         // self.fd.set_irqchip(&irqchip)
-    // }
+    }
 
     /// This function dumps irqchip's states
-    pub fn dump_irqchip(&self, snapshot: &mut Snapshot) -> result::Result<(), io::Error> {
+    pub fn dump_irqchip(&self, snapshot: &mut Snapshot, mpidrs: &[u64]) -> Result<()> {
         // snapshot.ioapic = get_ioapic_state(&self.fd)?;
         // snapshot.pic_master = get_pic_state(&self.fd, true)?;
         // snapshot.pic_slave = get_pic_state(&self.fd, false)?;
+
+        let irqchip_handle = self.irqchip_handle.as_ref().unwrap().device_fd();
+        // Flush redistributors pending tables to guest RAM.
+        // Required only by GICv3, needs update when we move to CSLAB machine
+        arch::aarch64::gic::save_pending_tables(irqchip_handle)
+            .map_err(Error::SaveRegisters)?;
+        println!("Saved pending tables");
+
+        let dist_state = arch::aarch64::gic::get_dist_regs(irqchip_handle)
+            .map_err(Error::SaveRegisters)?;
+        println!("Pirame dist_state");
+
+        // Same as above, we don't need the rdist state for GICv2 cause rdist regs will be initialized as new
+        let rdist_state = arch::aarch64::gic::get_redist_regs(irqchip_handle, &mpidrs)
+            .map_err(Error::SaveRegisters)?;
+        println!("Pirame rdist_state");
+        let rdist_state = Vec::new();
+    
+        let icc_state = arch::aarch64::gic::get_icc_regs(irqchip_handle, &mpidrs)
+            .map_err(Error::SaveRegisters)?;
+        println!("Pirame icc_state");
+
+        snapshot.gic_state = GicState {
+            dist: dist_state,
+            rdist: rdist_state,
+            icc: icc_state,
+        };
 
         Ok(())
     }
@@ -500,16 +494,26 @@ impl Vcpu {
 
     pub fn configure_aarch64(
         &mut self,
-        vm_fd: &VmFd,
         guest_mem: &GuestMemory,
         kernel_load_addr: GuestAddress,
         // maybe_vcpu_state: Option<&VcpuState>,
     ) -> Result<()> {
 
-        // let vm_memory = vm
-            // .get_memory()
-            // .ok_or(Error::GuestMemory(GuestMemoryError::MemoryNotInitialized))?;
+        arch::aarch64::regs::setup_regs(&self.fd, self.id, kernel_load_addr.offset(), guest_mem)
+            .map_err(Error::REGSConfiguration)?;
 
+        self.mpidr = arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::REGSConfiguration)?;
+
+        Ok(())
+    }
+
+
+    /// Initializes an aarch64 specific vcpu for booting Linux.
+    ///
+    /// # Arguments
+    ///
+    /// * `vm_fd` - The kvm `VmFd` for this microvm.
+    pub fn init(&self, vm_fd: &VmFd) -> Result<()> {
         let mut kvi: kvm_bindings::kvm_vcpu_init = kvm_bindings::kvm_vcpu_init::default();
 
         // This reads back the kernel's preferred target type.
@@ -523,17 +527,84 @@ impl Vcpu {
             kvi.features[0] |= 1 << kvm_bindings::KVM_ARM_VCPU_POWER_OFF;
         }
 
-        self.fd.vcpu_init(&kvi).map_err(Error::VcpuArmInit)?;
-        arch::aarch64::regs::setup_regs(&self.fd, self.id, kernel_load_addr.offset(), guest_mem)
-            .map_err(Error::REGSConfiguration)?;
-
-        self.mpidr = arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::REGSConfiguration)?;
-
-        Ok(())
+        self.fd.vcpu_init(&kvi).map_err(Error::VcpuArmInit)
     }
 
 
-    pub fn save_state(&self) -> Result<VcpuState> {
+    // fn load_vcpu_state(&self, vcpu_state: &VcpuState) -> result::Result<(), io::Error> {
+
+        // self.fd.set_regs(&vcpu_state.regs)?;
+
+        // let region_vec = &vcpu_state.xsave_region;
+        // let mut region = [0 as std::os::raw::c_uint; 1024usize];
+        // for idx in 0..region.len() {
+            // region[idx] = region_vec[idx];
+        // }
+        // let xsave = kvm_xsave{ region };
+        // self.fd.set_xsave(&xsave)?;
+
+        // self.fd.set_xcrs(&vcpu_state.xcrs)?;
+
+        // self.fd.set_sregs(&vcpu_state.sregs)?;
+
+        // let regs_vec = &vcpu_state.lapic_regs;
+        // from kvm api documentation, KVM_APIC_REG_SIZE = 0x400/1024
+        // let mut regs = [0 as std::os::raw::c_char; 1024usize];
+        // for (idx, _) in regs_vec.iter().enumerate() {
+            // regs[idx] = regs_vec[idx];
+        // }
+
+        // self.set_msrs(vcpu_state)?;
+
+        // let lapic = kvm_lapic_state { regs };
+        // self.fd.set_lapic(&lapic)?;
+
+        // this must be after lapic is restored
+        // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
+        // let tscdeadline_entry = vcpu_state.msr_entries[vcpu_state.msr_entries.len()-1];
+        // let vec: Vec<u8> = Vec::with_capacity(std::mem::size_of::<kvm_msr_entry>());
+        // #[allow(clippy::cast_ptr_alignment)]
+        // let msrs: &mut kvm_msrs = unsafe {
+            // &mut *(vec.as_ptr() as *mut kvm_msrs)
+        // };
+
+        // unsafe {
+            // msrs.entries.as_mut_slice(1).copy_from_slice(&[tscdeadline_entry]);
+        // }
+        // msrs.nmsrs = 1;
+        // self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
+
+        // self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
+
+        // self.fd.set_mp_state(&vcpu_state.mp_state)?;
+
+        // Ok(())
+    // }
+
+    // fn dump_vcpu_state(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
+        // vcpu_state.vcpu_events = self.fd.get_vcpu_events()?;
+
+        // vcpu_state.mp_state = self.fd.get_mp_state()?;
+
+        // vcpu_state.regs = self.fd.get_regs()?;
+
+        // let xsave = self.fd.get_xsave()?;
+        // vcpu_state.xsave_region = xsave.region.to_vec();
+
+        // vcpu_state.xcrs = self.fd.get_xcrs()?;
+
+        // vcpu_state.sregs = self.fd.get_sregs()?;
+
+        // self.get_msrs(vcpu_state)?;
+
+        // let lapic = self.fd.get_lapic()?;
+        // vcpu_state.lapic_regs = lapic.regs.to_vec();
+
+        // Ok(())
+    // }
+
+
+    pub fn dump_vcpu_state(&self) -> Result<VcpuState> {
         // Err(Error::UnsupportedAction("Saving the state"))
         let mut state = VcpuState::default();
 
@@ -613,77 +684,7 @@ impl Vcpu {
     //     self.fd.set_msrs(msrs)
     // }
 
-    // fn load_vcpu_state(&self, vcpu_state: &VcpuState) -> result::Result<(), io::Error> {
 
-        // self.fd.set_regs(&vcpu_state.regs)?;
-
-        // let region_vec = &vcpu_state.xsave_region;
-        // let mut region = [0 as std::os::raw::c_uint; 1024usize];
-        // for idx in 0..region.len() {
-            // region[idx] = region_vec[idx];
-        // }
-        // let xsave = kvm_xsave{ region };
-        // self.fd.set_xsave(&xsave)?;
-
-        // self.fd.set_xcrs(&vcpu_state.xcrs)?;
-
-        // self.fd.set_sregs(&vcpu_state.sregs)?;
-
-        // let regs_vec = &vcpu_state.lapic_regs;
-        // from kvm api documentation, KVM_APIC_REG_SIZE = 0x400/1024
-        // let mut regs = [0 as std::os::raw::c_char; 1024usize];
-        // for (idx, _) in regs_vec.iter().enumerate() {
-            // regs[idx] = regs_vec[idx];
-        // }
-
-        // self.set_msrs(vcpu_state)?;
-
-        // let lapic = kvm_lapic_state { regs };
-        // self.fd.set_lapic(&lapic)?;
-
-        // this must be after lapic is restored
-        // write to msr_tscdeadline only takes effect when lapic is in `tscdeadline` mode
-        // let tscdeadline_entry = vcpu_state.msr_entries[vcpu_state.msr_entries.len()-1];
-        // let vec: Vec<u8> = Vec::with_capacity(std::mem::size_of::<kvm_msr_entry>());
-        // #[allow(clippy::cast_ptr_alignment)]
-        // let msrs: &mut kvm_msrs = unsafe {
-            // &mut *(vec.as_ptr() as *mut kvm_msrs)
-        // };
-
-        // unsafe {
-            // msrs.entries.as_mut_slice(1).copy_from_slice(&[tscdeadline_entry]);
-        // }
-        // msrs.nmsrs = 1;
-        // self.fd.set_msrs(msrs).expect("Failed to write msr tscdeadline");
-
-        // self.fd.set_vcpu_events(&vcpu_state.vcpu_events)?;
-
-        // self.fd.set_mp_state(&vcpu_state.mp_state)?;
-
-        // Ok(())
-    // }
-
-    // fn dump_vcpu_state(&self, vcpu_state: &mut VcpuState) -> result::Result<(), io::Error> {
-        // vcpu_state.vcpu_events = self.fd.get_vcpu_events()?;
-
-        // vcpu_state.mp_state = self.fd.get_mp_state()?;
-
-        // vcpu_state.regs = self.fd.get_regs()?;
-
-        // let xsave = self.fd.get_xsave()?;
-        // vcpu_state.xsave_region = xsave.region.to_vec();
-
-        // vcpu_state.xcrs = self.fd.get_xcrs()?;
-
-        // vcpu_state.sregs = self.fd.get_sregs()?;
-
-        // self.get_msrs(vcpu_state)?;
-
-        // let lapic = self.fd.get_lapic()?;
-        // vcpu_state.lapic_regs = lapic.regs.to_vec();
-
-        // Ok(())
-    // }
 
     // #[cfg(target_arch = "x86_64")]
     /// Configures a x86_64 specific vcpu and should be called once per vcpu from the vcpu's thread.
@@ -819,11 +820,11 @@ impl Vcpu {
                                 // Remove, we want first to check memory dump is working
 
                                 // let mut vcpu_state = VcpuState::default();
-                                // self.dump_vcpu_state(&mut vcpu_state)?;
-                                // sender.send(VcpuInfo{
-                                    // id: self.id,
-                                    // state: vcpu_state,
-                                // }).expect("Failed sending vcpu state");
+                                let mut vcpu_state = self.dump_vcpu_state()?;
+                                sender.send(VcpuInfo{
+                                    id: self.id,
+                                    state: vcpu_state,
+                                }).expect("Failed sending vcpu state");
                                 
                                 vcpu_snap_evt.write(1).expect("Failed signaling vcpu snap event");
                                 snap_barrier.wait();
