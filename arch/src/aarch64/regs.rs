@@ -528,6 +528,28 @@ pub fn set_mpstate(vcpu: &VcpuFd, state: kvm_mp_state) -> Result<()> {
     vcpu.set_mp_state(&state).map_err(Error::SetMP)
 }
 
+/// Structure representing a simple register.
+#[derive(PartialEq)]
+pub(crate) struct SimpleReg {
+    /// The offset from the component address. The register is memory mapped here.
+    pub offset: u64,
+    /// Size in bytes.
+    size: u16,
+}
+
+impl SimpleReg {
+    pub const fn new(offset: u64, size: u16) -> SimpleReg {
+        SimpleReg { offset, size }
+    }
+}
+
+// impl MmioReg for SimpleReg {
+    // fn range(&self) -> Range<u64> {
+        // self.offset..self.offset + u64::from(self.size)
+    // }
+// }
+
+
 #[cfg(test)]
 mod tests {
     use kvm_ioctls::Kvm;

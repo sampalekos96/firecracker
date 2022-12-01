@@ -2172,6 +2172,21 @@ impl Vmm {
         Ok(VmmData::Empty)
     }
 
+
+    /// Process the content of the MPIDR_EL1 register in order to be able to pass it to KVM
+    ///
+    /// The kernel expects to find the four affinity levels of the MPIDR in the first 32 bits of the
+    /// VGIC register attribute:
+    /// https://elixir.free-electrons.com/linux/v4.14.203/source/virt/kvm/arm/vgic/vgic-kvm-device.c#L445.
+    ///
+    /// The format of the MPIDR_EL1 register is:
+    /// | 39 .... 32 | 31 .... 24 | 23 .... 16 | 15 .... 8 | 7 .... 0 |
+    /// |    Aff3    |    Other   |    Aff2    |    Aff1   |   Aff0   |
+    ///
+    /// The KVM mpidr format is:
+    /// | 63 .... 56 | 55 .... 48 | 47 .... 40 | 39 .... 32 |
+    /// |    Aff3    |    Aff2    |    Aff1    |    Aff0    |
+    /// As specified in the linux kernel: Documentation/virt/kvm/devices/arm-vgic-v3.rst
     fn construct_gicr_typer(vcpu_state: &vstate::VcpuState) -> Vec<u64> {
         /* Pre-construct the GICR_TYPER:
          * For our implementation:
@@ -2186,12 +2201,15 @@ impl Vmm {
          *  PLPIS == 0 (physical LPIs not supported)
          */
         let mut mpidrs: Vec<u64> = Vec::new();
-        // let mut mpidrs: u64;
-        let index = 0;
-        let last = 1;
-        let mut cpu_affid = vcpu_state.mpidr & 1_0952_3343_7695;
-        cpu_affid = ((cpu_affid & 0xFF_0000_0000) >> 8) | (cpu_affid & 0xFF_FFFF);
-        mpidrs.push((cpu_affid << 32) | (1 << 24) | (index as u64) << 8 | (last << 4));
+        
+        // let index = 0;
+        // let last = 1;
+        // let mut cpu_affid = vcpu_state.mpidr & 1_0952_3343_7695;
+        // cpu_affid = ((cpu_affid & 0xFF_0000_0000) >> 8) | (cpu_affid & 0xFF_FFFF);
+        // mpidrs.push((cpu_affid << 32) | (1 << 24) | (index as u64) << 8 | (last << 4));
+
+        let mut cpu_affid = ((vcpu_state.mpidr & 0xFF_0000_0000) >> 8) | (vcpu_state.mpidr & 0xFF_FFFF);
+        mpidrs.push(cpu_affid << 32);
 
         // for (index, state) in vcpu_states.iter().enumerate() {
             // let last = {
