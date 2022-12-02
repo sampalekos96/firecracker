@@ -304,12 +304,14 @@ impl Vm {
 
         arch::aarch64::gic::set_dist_regs(irqchip_handle, &state.dist)
             .map_err(Error::RestoreRegisters)?;
-        arch::aarch64::gic::set_redist_regs(irqchip_handle, mpidrs, &state.rdist)
-            .map_err(Error::RestoreRegisters)?;
+
+        // No need for GICv2
+        // arch::aarch64::gic::set_redist_regs(irqchip_handle, mpidrs, &state.rdist)
+            // .map_err(Error::RestoreRegisters)?;
         arch::aarch64::gic::set_icc_regs(irqchip_handle, &mpidrs, &state.icc)
             .map_err(Error::RestoreRegisters)?;
 
-        // WE NEED TO FIX THIS
+        // WE NEED TO FIX THIS (? --> we need to set it only for x86 attr - pic_slave, pic_master, ioapic - so we,re good to go)
         // self.fd.set_irqchip(irqchip_handle);
 
         Ok(())
@@ -409,11 +411,16 @@ impl Vm {
                 .map_err(Error::SetupGIC)?,
         );
 
-        // println!("Meta tin create_gic");
+        println!("Meta tin create_gic");
 
         if let Some(snapshot) = maybe_snapshot {
             let start = now_monotime_us();
-            // self.load_irqchip(snapshot).map_err(|e| Error::LoadSnapshot(e))?;
+            let vcpu_state = &snapshot.vcpu_states[0 as usize];
+            println!("Prin tin construct_gicr_typer");
+            let mpidrs = super::Vmm::construct_gicr_typer(&vcpu_state);
+            println!("Prin tin load_irqchip");
+            self.load_irqchip(snapshot, &mpidrs).unwrap();
+            // self.load_irqchip(snapshot, mpidrs).map_err(|e| Error::LoadSnapshot(e))?;
             let end = now_monotime_us();
             println!("restoring irqchip took {}us", end-start);
         }
@@ -500,11 +507,19 @@ impl Vcpu {
         &mut self,
         guest_mem: &GuestMemory,
         kernel_load_addr: GuestAddress,
-        // maybe_vcpu_state: Option<&VcpuState>,
+        maybe_vcpu_state: Option<&VcpuState>,
     ) -> Result<()> {
 
-        arch::aarch64::regs::setup_regs(&self.fd, self.id, kernel_load_addr.offset(), guest_mem)
-            .map_err(Error::REGSConfiguration)?;
+        if let Some(vcpu_state) = maybe_vcpu_state {
+            let start = now_monotime_us();
+            self.load_vcpu_state(vcpu_state).unwrap();
+            // self.load_vcpu_state(vcpu_state).map_err(|e| Error::LoadSnapshot(e))?;
+            let end = now_monotime_us();
+            println!("loading registers took {}us", end-start);
+        } else {
+            arch::aarch64::regs::setup_regs(&self.fd, self.id, kernel_load_addr.offset(), guest_mem)
+                .map_err(Error::REGSConfiguration)?;
+        }
 
         self.mpidr = arch::aarch64::regs::read_mpidr(&self.fd).map_err(Error::REGSConfiguration)?;
 
@@ -624,7 +639,7 @@ impl Vcpu {
         Ok(state)
     }
 
-    pub fn restore_state(&self, state: &VcpuState) -> Result<()> {
+    pub fn load_vcpu_state(&self, state: &VcpuState) -> Result<()> {
         arch::regs::restore_registers(&self.fd, &state.regs).map_err(Error::RestoreState)?;
 
         arch::regs::set_mpstate(&self.fd, state.mp_state).map_err(Error::RestoreState)?;

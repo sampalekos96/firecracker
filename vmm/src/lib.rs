@@ -1601,10 +1601,10 @@ impl Vmm {
 
             // WE NEED TO ADD VCPU LOAD STATE FUNCTIONALITY
             
-            // let maybe_vcpu_state = match self.snap_to_load.as_ref() {
-                // Some(snap) => Some(&snap.vcpu_states[cpu_id as usize]),
-                // None => None,
-            // };
+            let maybe_vcpu_state = match self.snap_to_load.as_ref() {
+                Some(snap) => Some(&snap.vcpu_states[cpu_id as usize]),
+                None => None,
+            };
 
             // vcpu.fd.init(&self.vm.fd).unwrap();
         
@@ -1615,7 +1615,7 @@ impl Vmm {
             vcpu.fd.init(&self.vm.fd).unwrap();
 
             // Check that configure_aarch64() is in the right place (propably move it outside create_vcpus()?)
-            vcpu.configure_aarch64(vm_memory, entry_addr)
+            vcpu.configure_aarch64(vm_memory, entry_addr, maybe_vcpu_state)
                 .map_err(StartMicrovmError::VcpuConfigure)?;
 
             // println!("Prin tin push vcpu");
@@ -2201,7 +2201,7 @@ impl Vmm {
          *  PLPIS == 0 (physical LPIs not supported)
          */
         let mut mpidrs: Vec<u64> = Vec::new();
-        
+
         // let index = 0;
         // let last = 1;
         // let mut cpu_affid = vcpu_state.mpidr & 1_0952_3343_7695;
