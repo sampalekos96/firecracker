@@ -126,7 +126,7 @@ fn get_fdt_addr(mem: &GuestMemory) -> u64 {
     // we allow the code to try and load the FDT.
 
     if let Some(addr) = mem.end_addr().checked_sub((layout::FDT_MAX_SIZE as u64).try_into().unwrap()) {
-        if mem.address_in_range(addr) {
+        if mem.address_in_range(addr, false) {
             return addr.offset().try_into().unwrap();
         }
     }

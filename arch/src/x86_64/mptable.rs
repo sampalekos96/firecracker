@@ -299,8 +299,8 @@ mod tests {
     #[test]
     fn bounds_check() {
         let num_cpus = 4;
-        let mem =
-            GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
+        // let mem =
+            // GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
 
         setup_mptable(&mem, num_cpus).unwrap();
     }
@@ -308,8 +308,8 @@ mod tests {
     #[test]
     fn bounds_check_fails() {
         let num_cpus = 4;
-        let mem = GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus) - 1)])
-            .unwrap();
+        // let mem = GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus) - 1)])
+            // .unwrap();
 
         assert!(setup_mptable(&mem, num_cpus).is_err());
     }
@@ -318,7 +318,7 @@ mod tests {
     fn mpf_intel_checksum() {
         let num_cpus = 1;
         let mem =
-            GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
+            // GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
 
         setup_mptable(&mem, num_cpus).unwrap();
 
@@ -335,7 +335,7 @@ mod tests {
     fn mpc_table_checksum() {
         let num_cpus = 4;
         let mem =
-            GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
+            // GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(num_cpus))]).unwrap();
 
         setup_mptable(&mem, num_cpus).unwrap();
 
@@ -365,11 +365,11 @@ mod tests {
 
     #[test]
     fn cpu_entry_count() {
-        let mem = GuestMemory::new(&[(
-            GuestAddress(MPTABLE_START),
-            compute_mp_size(MAX_SUPPORTED_CPUS as u8),
-        )])
-        .unwrap();
+        // let mem = GuestMemory::new(&[(
+        //     GuestAddress(MPTABLE_START),
+        //     compute_mp_size(MAX_SUPPORTED_CPUS as u8),
+        // )])
+        // .unwrap();
 
         for i in 0..MAX_SUPPORTED_CPUS as u8 {
             setup_mptable(&mem, i).unwrap();
@@ -401,8 +401,8 @@ mod tests {
     #[test]
     fn cpu_entry_count_max() {
         let cpus = MAX_SUPPORTED_CPUS + 1;
-        let mem = GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(cpus as u8))])
-            .unwrap();
+        // let mem = GuestMemory::new(&[(GuestAddress(MPTABLE_START), compute_mp_size(cpus as u8))])
+            // .unwrap();
 
         let result = setup_mptable(&mem, cpus as u8).unwrap_err();
         assert_eq!(result, Error::TooManyCpus);

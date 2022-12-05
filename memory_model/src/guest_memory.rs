@@ -211,7 +211,7 @@ impl GuestMemory {
                     &layer.dirty_regions
                 };
                 dir.push("memory_dump_sparse");
-                //println!("VMM: lazily restoring layer {} in {:?}...", i, dir);
+                println!("VMM: lazily restoring layer {} in {:?}...", i, dir);
                 let memory_dump = OpenOptions::new()
                     .read(true)
                     .custom_flags(if odirect { libc::O_DIRECT } else { 0 })
@@ -245,7 +245,7 @@ impl GuestMemory {
                         if mapped_addr  == libc::MAP_FAILED {
                             panic!("Unable to mmap the diff snapshot");
                         }
-                       // println!("file-mmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+                        println!("file-mmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                         i += 1;
                     }
                     Ok(())
@@ -296,9 +296,21 @@ impl GuestMemory {
     }
 
     /// Returns true if the given address is within the memory range available to the guest.
-    pub fn address_in_range(&self, addr: GuestAddress) -> bool {
+    pub fn address_in_range(&self, addr: GuestAddress, flag: bool) -> bool {
+        let mut temp;
         for region in self.regions.iter() {
-            if addr >= region.guest_base && addr < region_end(region) {
+
+            // println!("{:?}: ", region.guest_base);
+            // println!("{:?}: ", region_end(region));
+
+            if flag {
+                temp = addr.unchecked_add(region.guest_base.offset());
+                // println!("{:?} ", temp);
+            } else {
+                temp = addr;
+            }
+
+            if temp >= region.guest_base && addr < region_end(region) {
                 return true;
             }
         }
