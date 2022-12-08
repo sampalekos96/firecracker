@@ -223,7 +223,7 @@ impl GuestMemory {
                     // iterate through the regions for the current layer
                     while i < dirty_regions.len() && (dirty_regions[i].0 + dirty_regions[i].1) * PAGE_SIZE <= guest_base.offset() + size {
                         let offset = dirty_regions[i].0 * PAGE_SIZE;
-                        let addr = ptr + offset - guest_base.offset();
+                        let addr = ptr + offset; /* - guest_base.offset(); */
                         let region_len = dirty_regions[i].1 * PAGE_SIZE;
 
                         // we have to first unmap, then file-mmap
