@@ -147,7 +147,7 @@ impl GuestMemory {
             // the x86 carved out is at 4GiB, so for VM up to 3GiB
             // the check should never be reached as there is only one mapping
             while i < dirty_regions.len() && (dirty_regions[i].0 < guest_base.offset() + size) {
-                println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+                // println!("VMM: copying region at {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                 let guest_addr = dirty_regions[i].0 * PAGE_SIZE;
                 let region_len = dirty_regions[i].1 * PAGE_SIZE;
 
@@ -245,7 +245,7 @@ impl GuestMemory {
                         if mapped_addr  == libc::MAP_FAILED {
                             panic!("Unable to mmap the diff snapshot");
                         }
-                        println!("file-mmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
+                        // println!("file-mmap {}:{}", dirty_regions[i].0, dirty_regions[i].1);
                         i += 1;
                     }
                     Ok(())
@@ -300,8 +300,9 @@ impl GuestMemory {
         let mut temp;
         for region in self.regions.iter() {
 
-            // println!("{:?}: ", region.guest_base);
-            // println!("{:?}: ", region_end(region));
+            // println!("addr: {:?}", addr);
+            // println!("region.guest_base: {:?} ", region.guest_base);
+            // println!("region_end(region): {:?}", region_end(region));
 
             if flag {
                 temp = addr.unchecked_add(region.guest_base.offset());
