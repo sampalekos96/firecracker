@@ -4,91 +4,91 @@
 use super::{Error, Result};
 use kvm_bindings::*;
 use aarch64::DeviceFd;
-use crate::aarch64::regs::{SimpleReg};
+// use crate::aarch64::regs::{SimpleReg};
 
-const GICC_CTLR: SimpleReg = SimpleReg::new(0x0, 4);
-const GICC_PMR: SimpleReg = SimpleReg::new(0x04, 4);
-const GICC_BPR: SimpleReg = SimpleReg::new(0x08, 4);
-const GICC_APBR: SimpleReg = SimpleReg::new(0x001C, 4);
-const GICC_APR1: SimpleReg = SimpleReg::new(0x00D0, 4);
-const GICC_APR2: SimpleReg = SimpleReg::new(0x00D4, 4);
-const GICC_APR3: SimpleReg = SimpleReg::new(0x00D8, 4);
-const GICC_APR4: SimpleReg = SimpleReg::new(0x00DC, 4);
+// const GICC_CTLR: SimpleReg = SimpleReg::new(0x0, 4);
+// const GICC_PMR: SimpleReg = SimpleReg::new(0x04, 4);
+// const GICC_BPR: SimpleReg = SimpleReg::new(0x08, 4);
+// const GICC_APBR: SimpleReg = SimpleReg::new(0x001C, 4);
+// const GICC_APR1: SimpleReg = SimpleReg::new(0x00D0, 4);
+// const GICC_APR2: SimpleReg = SimpleReg::new(0x00D4, 4);
+// const GICC_APR3: SimpleReg = SimpleReg::new(0x00D8, 4);
+// const GICC_APR4: SimpleReg = SimpleReg::new(0x00DC, 4);
 
 // NOTICE: Any changes to this structure require a snapshot version bump.
-static MAIN_VGIC_ICC_REGS: &[SimpleReg] = &[
-    GICC_CTLR, GICC_PMR, GICC_BPR, GICC_APBR, GICC_APR1, GICC_APR2, GICC_APR3, GICC_APR4,
-];
-
-const KVM_DEV_ARM_VGIC_CPUID_SHIFT: u32 = 32;
-const KVM_DEV_ARM_VGIC_OFFSET_SHIFT: u32 = 0;
-
-// const KVM_DEV_ARM_VGIC_V3_MPIDR_SHIFT: u32 = 32;
-// const KVM_DEV_ARM_VGIC_V3_MPIDR_MASK: u64 = 0xffff_ffff << KVM_DEV_ARM_VGIC_V3_MPIDR_SHIFT as u64;
-
-// const ICC_CTLR_EL1_PRIBITS_SHIFT: u32 = 8;
-// const ICC_CTLR_EL1_PRIBITS_MASK: u32 = 7 << ICC_CTLR_EL1_PRIBITS_SHIFT;
-
-// macro_rules! arm64_vgic_sys_reg {
-//     ($name: tt, $op0: tt, $op1: tt, $crn: tt, $crm: tt, $op2: expr) => {
-//         const $name: u64 = ((($op0 as u64) << KVM_REG_ARM64_SYSREG_OP0_SHIFT)
-//             & KVM_REG_ARM64_SYSREG_OP0_MASK as u64)
-//             | ((($op1 as u64) << KVM_REG_ARM64_SYSREG_OP1_SHIFT)
-//                 & KVM_REG_ARM64_SYSREG_OP1_MASK as u64)
-//             | ((($crn as u64) << KVM_REG_ARM64_SYSREG_CRN_SHIFT)
-//                 & KVM_REG_ARM64_SYSREG_CRN_MASK as u64)
-//             | ((($crm as u64) << KVM_REG_ARM64_SYSREG_CRM_SHIFT)
-//                 & KVM_REG_ARM64_SYSREG_CRM_MASK as u64)
-//             | ((($op2 as u64) << KVM_REG_ARM64_SYSREG_OP2_SHIFT)
-//                 & KVM_REG_ARM64_SYSREG_OP2_MASK as u64);
-//     };
-// }
-
-// macro_rules! SYS_ICC_AP0Rn_EL1 {
-//     ($name: tt, $n: tt) => {
-//         arm64_vgic_sys_reg!($name, 3, 0, 12, 8, (4 | $n));
-//     };
-// }
-
-// macro_rules! SYS_ICC_AP1Rn_EL1 {
-//     ($name: tt, $n: tt) => {
-//         arm64_vgic_sys_reg!($name, 3, 0, 12, 9, $n);
-//     };
-// }
-
-// arm64_vgic_sys_reg!(SYS_ICC_SRE_EL1, 3, 0, 12, 12, 5);
-// arm64_vgic_sys_reg!(SYS_ICC_CTLR_EL1, 3, 0, 12, 12, 4);
-// arm64_vgic_sys_reg!(SYS_ICC_IGRPEN0_EL1, 3, 0, 12, 12, 6);
-// arm64_vgic_sys_reg!(SYS_ICC_IGRPEN1_EL1, 3, 0, 12, 12, 7);
-// arm64_vgic_sys_reg!(SYS_ICC_PMR_EL1, 3, 0, 4, 6, 0);
-// arm64_vgic_sys_reg!(SYS_ICC_BPR0_EL1, 3, 0, 12, 8, 3);
-// arm64_vgic_sys_reg!(SYS_ICC_BPR1_EL1, 3, 0, 12, 12, 3);
-// SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R0_EL1, 0);
-// SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R1_EL1, 1);
-// SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R2_EL1, 2);
-// SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R3_EL1, 3);
-// SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R0_EL1, 0);
-// SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R1_EL1, 1);
-// SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R2_EL1, 2);
-// SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R3_EL1, 3);
-
-// static VGIC_ICC_REGS: &[u64] = &[
-//     SYS_ICC_SRE_EL1,
-//     SYS_ICC_CTLR_EL1,
-//     SYS_ICC_IGRPEN0_EL1,
-//     SYS_ICC_IGRPEN1_EL1,
-//     SYS_ICC_PMR_EL1,
-//     SYS_ICC_BPR0_EL1,
-//     SYS_ICC_BPR1_EL1,
-//     SYS_ICC_AP0R0_EL1,
-//     SYS_ICC_AP0R1_EL1,
-//     SYS_ICC_AP0R2_EL1,
-//     SYS_ICC_AP0R3_EL1,
-//     SYS_ICC_AP1R0_EL1,
-//     SYS_ICC_AP1R1_EL1,
-//     SYS_ICC_AP1R2_EL1,
-//     SYS_ICC_AP1R3_EL1,
+// static MAIN_VGIC_ICC_REGS: &[SimpleReg] = &[
+//     GICC_CTLR, GICC_PMR, GICC_BPR, GICC_APBR, GICC_APR1, GICC_APR2, GICC_APR3, GICC_APR4,
 // ];
+
+// const KVM_DEV_ARM_VGIC_CPUID_SHIFT: u32 = 32;
+// const KVM_DEV_ARM_VGIC_OFFSET_SHIFT: u32 = 0;
+
+const KVM_DEV_ARM_VGIC_V3_MPIDR_SHIFT: u32 = 32;
+const KVM_DEV_ARM_VGIC_V3_MPIDR_MASK: u64 = 0xffff_ffff << KVM_DEV_ARM_VGIC_V3_MPIDR_SHIFT as u64;
+
+const ICC_CTLR_EL1_PRIBITS_SHIFT: u32 = 8;
+const ICC_CTLR_EL1_PRIBITS_MASK: u32 = 7 << ICC_CTLR_EL1_PRIBITS_SHIFT;
+
+macro_rules! arm64_vgic_sys_reg {
+    ($name: tt, $op0: tt, $op1: tt, $crn: tt, $crm: tt, $op2: expr) => {
+        const $name: u64 = ((($op0 as u64) << KVM_REG_ARM64_SYSREG_OP0_SHIFT)
+            & KVM_REG_ARM64_SYSREG_OP0_MASK as u64)
+            | ((($op1 as u64) << KVM_REG_ARM64_SYSREG_OP1_SHIFT)
+                & KVM_REG_ARM64_SYSREG_OP1_MASK as u64)
+            | ((($crn as u64) << KVM_REG_ARM64_SYSREG_CRN_SHIFT)
+                & KVM_REG_ARM64_SYSREG_CRN_MASK as u64)
+            | ((($crm as u64) << KVM_REG_ARM64_SYSREG_CRM_SHIFT)
+                & KVM_REG_ARM64_SYSREG_CRM_MASK as u64)
+            | ((($op2 as u64) << KVM_REG_ARM64_SYSREG_OP2_SHIFT)
+                & KVM_REG_ARM64_SYSREG_OP2_MASK as u64);
+    };
+}
+
+macro_rules! SYS_ICC_AP0Rn_EL1 {
+    ($name: tt, $n: tt) => {
+        arm64_vgic_sys_reg!($name, 3, 0, 12, 8, (4 | $n));
+    };
+}
+
+macro_rules! SYS_ICC_AP1Rn_EL1 {
+    ($name: tt, $n: tt) => {
+        arm64_vgic_sys_reg!($name, 3, 0, 12, 9, $n);
+    };
+}
+
+arm64_vgic_sys_reg!(SYS_ICC_SRE_EL1, 3, 0, 12, 12, 5);
+arm64_vgic_sys_reg!(SYS_ICC_CTLR_EL1, 3, 0, 12, 12, 4);
+arm64_vgic_sys_reg!(SYS_ICC_IGRPEN0_EL1, 3, 0, 12, 12, 6);
+arm64_vgic_sys_reg!(SYS_ICC_IGRPEN1_EL1, 3, 0, 12, 12, 7);
+arm64_vgic_sys_reg!(SYS_ICC_PMR_EL1, 3, 0, 4, 6, 0);
+arm64_vgic_sys_reg!(SYS_ICC_BPR0_EL1, 3, 0, 12, 8, 3);
+arm64_vgic_sys_reg!(SYS_ICC_BPR1_EL1, 3, 0, 12, 12, 3);
+SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R0_EL1, 0);
+SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R1_EL1, 1);
+SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R2_EL1, 2);
+SYS_ICC_AP0Rn_EL1!(SYS_ICC_AP0R3_EL1, 3);
+SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R0_EL1, 0);
+SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R1_EL1, 1);
+SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R2_EL1, 2);
+SYS_ICC_AP1Rn_EL1!(SYS_ICC_AP1R3_EL1, 3);
+
+static VGIC_ICC_REGS: &[u64] = &[
+    SYS_ICC_SRE_EL1,
+    SYS_ICC_CTLR_EL1,
+    SYS_ICC_IGRPEN0_EL1,
+    SYS_ICC_IGRPEN1_EL1,
+    SYS_ICC_PMR_EL1,
+    SYS_ICC_BPR0_EL1,
+    SYS_ICC_BPR1_EL1,
+    SYS_ICC_AP0R0_EL1,
+    SYS_ICC_AP0R1_EL1,
+    SYS_ICC_AP0R2_EL1,
+    SYS_ICC_AP0R3_EL1,
+    SYS_ICC_AP1R0_EL1,
+    SYS_ICC_AP1R1_EL1,
+    SYS_ICC_AP1R2_EL1,
+    SYS_ICC_AP1R3_EL1,
+];
 
 // Helps with triggering either a register fetch or a store.
 enum Action<'a> {
@@ -98,12 +98,19 @@ enum Action<'a> {
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn access_icc_attr(fd: &DeviceFd, offset: u64, typer: u64, val: &u32, set: bool) -> Result<()> {
+    // GICv2
+    // let mut gic_icc_attr = kvm_bindings::kvm_device_attr {
+        // group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CPU_REGS,
+        // attr: ((typer << KVM_DEV_ARM_VGIC_CPUID_SHIFT)
+                // & (0xff << KVM_DEV_ARM_VGIC_CPUID_SHIFT))
+                // | ((offset << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)
+                    // & (0xffffffff << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)),
+        // addr: val as *const u32 as u64,
+        // flags: 0,
+    // };
     let mut gic_icc_attr = kvm_bindings::kvm_device_attr {
-        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CPU_REGS,
-        attr: ((typer << KVM_DEV_ARM_VGIC_CPUID_SHIFT)
-                & (0xff << KVM_DEV_ARM_VGIC_CPUID_SHIFT))
-                | ((offset << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)
-                    & (0xffffffff << KVM_DEV_ARM_VGIC_OFFSET_SHIFT)),
+        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        attr: ((typer & KVM_DEV_ARM_VGIC_V3_MPIDR_MASK) | offset), // this needs the mpidr
         addr: val as *const u32 as u64,
         flags: 0,
     };
@@ -125,7 +132,7 @@ fn access_icc_reg_list(fd: &DeviceFd, gicr_typer: &[u64], action: &mut Action) -
     let mut num_priority_bits = 0;
 
     for i in gicr_typer {
-        for icc_offset in MAIN_VGIC_ICC_REGS {
+        for icc_offset in VGIC_ICC_REGS {
             // As per ARMv8 documentation: https://static.docs.arm.com/ihi0069/c/IHI0069C_
             // gic_architecture_specification.pdf
             // page 178,
@@ -134,43 +141,43 @@ fn access_icc_reg_list(fd: &DeviceFd, gicr_typer: &[u64], action: &mut Action) -
             // ICC_AP0R2_EL1 and ICC_AP0R3_EL1 are only implemented in implementations that support
             // 7 bits of priority.
 
-            // if (*icc_offset == SYS_ICC_AP0R1_EL1 || *icc_offset == SYS_ICC_AP1R1_EL1)
-                // && num_priority_bits < 6
-            // {
-                // continue;
-            // }
-            // if (*icc_offset == SYS_ICC_AP0R2_EL1
-                // || *icc_offset == SYS_ICC_AP0R3_EL1
-                // || *icc_offset == SYS_ICC_AP1R2_EL1
-                // || *icc_offset == SYS_ICC_AP1R3_EL1)
-                // && num_priority_bits != 7
-            // {
-                // continue;
-            // }
+            if (*icc_offset == SYS_ICC_AP0R1_EL1 || *icc_offset == SYS_ICC_AP1R1_EL1)
+                && num_priority_bits < 6
+            {
+                continue;
+            }
+            if (*icc_offset == SYS_ICC_AP0R2_EL1
+                || *icc_offset == SYS_ICC_AP0R3_EL1
+                || *icc_offset == SYS_ICC_AP1R2_EL1
+                || *icc_offset == SYS_ICC_AP1R3_EL1)
+                && num_priority_bits != 7
+            {
+                continue;
+            }
             let val;
             match action {
                 Action::Set(state, idx) => {
                     val = state[*idx];
-                    access_icc_attr(fd, (icc_offset.offset), *i, &val, true)?;
+                    access_icc_attr(fd, *icc_offset, *i, &val, true)?;
                     *idx += 1;
                 }
                 Action::Get(state) => {
                     val = 0;
-                    access_icc_attr(fd, (icc_offset.offset), *i, &val, false)?;
+                    access_icc_attr(fd, *icc_offset, *i, &val, false)?;
                     state.push(val);
                 }
             }
 
-            // if *icc_offset == SYS_ICC_CTLR_EL1 {
+            if *icc_offset == SYS_ICC_CTLR_EL1 {
                 // The priority bits are found in the ICC_CTLR_EL1 register (bits from  10:8).
                 // See page 194 from https://static.docs.arm.com/ihi0069/c/IHI0069C_gic_
                 // architecture_specification.pdf.
                 // Citation:
                 // "Priority bits. Read-only and writes are ignored. The number of priority bits
                 // implemented, minus one."
-                // num_priority_bits =
-                    // ((val & ICC_CTLR_EL1_PRIBITS_MASK) >> ICC_CTLR_EL1_PRIBITS_SHIFT) + 1;
-            // }
+                num_priority_bits =
+                    ((val & ICC_CTLR_EL1_PRIBITS_MASK) >> ICC_CTLR_EL1_PRIBITS_SHIFT) + 1;
+            }
         }
     }
     Ok(())

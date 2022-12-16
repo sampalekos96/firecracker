@@ -306,8 +306,9 @@ impl Vm {
             .map_err(Error::RestoreRegisters)?;
 
         // No need for GICv2
-        // arch::aarch64::gic::set_redist_regs(irqchip_handle, mpidrs, &state.rdist)
-            // .map_err(Error::RestoreRegisters)?;
+        arch::aarch64::gic::set_redist_regs(irqchip_handle, mpidrs, &state.rdist)
+            .map_err(Error::RestoreRegisters)?;
+            
         arch::aarch64::gic::set_icc_regs(irqchip_handle, &mpidrs, &state.icc)
             .map_err(Error::RestoreRegisters)?;
 
@@ -359,9 +360,9 @@ impl Vm {
 
         // Flush redistributors pending tables to guest RAM.
         // Required only by GICv3, needs update when we move to CSLAB machine
-        // arch::aarch64::gic::save_pending_tables(irqchip_handle)
-            // .map_err(Error::SaveRegisters)?;
-        // println!("Saved pending tables");
+        arch::aarch64::gic::save_pending_tables(irqchip_handle)
+            .map_err(Error::SaveRegisters)?;
+        println!("Saved pending tables");
 
         // the way dist regs are saves, is the same for both GIC versions
         let dist_state = arch::aarch64::gic::get_dist_regs(irqchip_handle)
@@ -369,10 +370,10 @@ impl Vm {
         println!("Pirame dist_state");
 
         // Same as above, we don't need the rdist state for GICv2 cause rdist regs will be initialized as new
-        // let rdist_state = arch::aarch64::gic::get_redist_regs(irqchip_handle, &mpidrs)
-            // .map_err(Error::SaveRegisters)?;
-        // println!("Pirame rdist_state");
-        let rdist_state = Vec::new();
+        let rdist_state = arch::aarch64::gic::get_redist_regs(irqchip_handle, &mpidrs)
+            .map_err(Error::SaveRegisters)?;
+        println!("Pirame rdist_state");
+        // let rdist_state = Vec::new();
     
         // Implementation specific for GICv2 
         let icc_state = arch::aarch64::gic::get_icc_regs(irqchip_handle, &mpidrs)
